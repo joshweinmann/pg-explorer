@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output (rebuilt with `bun run build`)
+/pg-explorer
+
+# Bun
+.bun-cache/
+
+# TypeScript
+*.tsbuildinfo
+
+# Test artifacts
+coverage/
+*.lcov
+
+# Local environment
+.env
+.env.local
+.agents
+
+# Logs
+*.log
+npm-debug.log*
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docs
+REQUIREMENTS.md
+ARCHITECTURE.md
+ideas.txt
