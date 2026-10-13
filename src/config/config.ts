@@ -1,7 +1,8 @@
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
-import { homedir } from "node:os"
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
+import { dirname } from "node:path"
+import { defaultAppPaths } from "./paths"
+import { isMissingFile } from "../errors"
 
 export interface ConnectionConfig {
   host: string
@@ -12,6 +13,10 @@ export interface ConnectionConfig {
 
 export interface StoredConfig extends ConnectionConfig {
   password?: string
+}
+
+export interface AppConfig {
+  connections: StoredConfig[]
 }
 
 export interface ConnectionFormValues {
@@ -55,7 +60,29 @@ export const DEFAULT_HOST = "localhost"
 export const DEFAULT_PORT = 5432
 
 export function defaultConfigPath(): string {
-  return join(homedir(), ".config", "pg-explorer", "config")
+  return defaultAppPaths().config
+}
+
+export function connectionId(config: ConnectionConfig): string {
+  return `${config.user}@${config.host}:${config.port}/${config.database}`
+}
+
+// Most recently used first; `replaceId` drops the entry being edited.
+export function upsertConnection(
+  connections: StoredConfig[],
+  config: StoredConfig,
+  replaceId?: string,
+): StoredConfig[] {
+  const id = connectionId(config)
+  const rest = connections.filter((c) => {
+    const cid = connectionId(c)
+    return cid !== id && cid !== replaceId
+  })
+  return [config, ...rest]
+}
+
+export function removeConnection(connections: StoredConfig[], id: string): StoredConfig[] {
+  return connections.filter((c) => connectionId(c) !== id)
 }
 
 function str(value: unknown): string | undefined {
@@ -66,9 +93,7 @@ function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
-export function parseConfig(toml: string): StoredConfig {
-  const parsed = parseToml(toml) as { connection?: Record<string, unknown> }
-  const connection = parsed.connection ?? {}
+function parseConnection(connection: Record<string, unknown>): StoredConfig {
   const host = str(connection.host) ?? DEFAULT_HOST
   let port = DEFAULT_PORT
   if (connection.port !== undefined) {
@@ -84,29 +109,51 @@ export function parseConfig(toml: string): StoredConfig {
   return { host, port, user, database, ...(password ? { password } : {}) }
 }
 
-export function serializeConfig(config: ConnectionConfig): string {
+// Reads `[[connections]]`; a legacy single `[connection]` table becomes a one-item list.
+export function parseConfig(toml: string): AppConfig {
+  const parsed = parseToml(toml) as { connection?: unknown; connections?: unknown }
+  const tables: Record<string, unknown>[] = []
+  if (Array.isArray(parsed.connections)) {
+    for (const entry of parsed.connections) {
+      if (entry && typeof entry === "object") tables.push(entry as Record<string, unknown>)
+    }
+  } else if (parsed.connection && typeof parsed.connection === "object") {
+    tables.push(parsed.connection as Record<string, unknown>)
+  }
+  const connections: StoredConfig[] = []
+  for (const table of tables) {
+    const connection = parseConnection(table)
+    if (!connections.some((c) => connectionId(c) === connectionId(connection))) connections.push(connection)
+  }
+  return { connections }
+}
+
+export function serializeConfig(config: AppConfig): string {
   return stringifyToml({
-    connection: {
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      database: config.database,
-    },
+    connections: config.connections.map((c) => ({
+      host: c.host,
+      port: c.port,
+      user: c.user,
+      database: c.database,
+      ...(c.password ? { password: c.password } : {}),
+    })),
   })
 }
 
-export async function loadConfig(path: string = defaultConfigPath()): Promise<StoredConfig | null> {
+export async function loadConfig(path: string = defaultConfigPath()): Promise<AppConfig> {
   let content: string
   try {
     content = await readFile(path, "utf8")
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null
+    if (isMissingFile(err)) return { connections: [] }
     throw err
   }
   return parseConfig(content)
 }
 
-export async function saveConfig(config: ConnectionConfig, path: string = defaultConfigPath()): Promise<void> {
+// The file holds passwords, so it is kept owner-only (mode applies on create; chmod fixes older files).
+export async function saveConfig(config: AppConfig, path: string = defaultConfigPath()): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, serializeConfig(config), "utf8")
+  await writeFile(path, serializeConfig(config), { encoding: "utf8", mode: 0o600 })
+  await chmod(path, 0o600)
 }

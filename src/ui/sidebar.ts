@@ -12,6 +12,7 @@ import {
   type TextChunk,
 } from "@opentui/core"
 import { theme } from "../theme"
+import { errorMessage } from "../errors"
 import type { DbConnection } from "../db/client"
 import type { ColumnInfo, SchemaInfo, TableInfo } from "../db/metadata"
 
@@ -113,7 +114,7 @@ export class Sidebar {
       this.cursorIndex = 0
       this.renderRows()
     } catch (err) {
-      this.showError(`metadata error: ${errText(err)}`)
+      this.showError(`metadata error: ${errorMessage(err)}`)
     }
   }
 
@@ -157,7 +158,7 @@ export class Sidebar {
         try {
           tableInfo.columns = await this.db.loadTableColumns(schema, table)
         } catch (err) {
-          this.showError(`metadata error: ${errText(err)}`)
+          this.showError(`metadata error: ${errorMessage(err)}`)
           return
         }
       }
@@ -327,6 +328,3 @@ export class Sidebar {
   }
 }
 
-function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}

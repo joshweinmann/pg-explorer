@@ -5,9 +5,11 @@ A minimalist TUI PostgreSQL client. Black background, white text, color reserved
 ## Features
 
 - **Schema browser** — expandable schemas → tables/views → columns tree with data types and `PK` / `FK` / `NN` markers
-- **SQL editor** — line numbers, keyword/string/number/comment highlighting, auto-growing height, `CTRL-Enter` to execute
-- **Results grid** — bordered table with sticky header, pagination, row selection, and copy-row-as-JSON
-- **Connection dialog** — masked password input; credentials (minus password) persist to config
+- **SQL editor** — line numbers, keyword/string/number/comment highlighting, auto-growing height, undo/redo; `CTRL-Enter` runs the statement under the cursor (highlighted in the gutter)
+- **Results grid** — bordered table with sticky header, pagination, row selection, copy-row-as-JSON, and click-to-sort headers
+- **Tabs** — each tab has its own SQL and results; tabs are saved per connection and restored on reconnect
+- **Query history & favorites** — per-connection, searchable pickers (`CTRL-R` / `CTRL-F`)
+- **Saved connections** — `CTRL-O` lists saved connections; masked password input; passwords are saved to the config file
 - **In-app keybind help** — `CTRL-H`
 
 ## Requirements
@@ -31,19 +33,22 @@ bun run install
 pg-explorer        # works from any directory
 ```
 
-On first launch with saved credentials, the connection dialog opens pre-filled and only asks for the password.
+On launch the connections picker opens: pick a saved connection (connects immediately if its password is saved) or `+ new connection`.
 
 ## Config
 
-Settings live at `~/.config/pg-explorer/config` (TOML). The password is never written to disk — it is prompted every launch.
+Settings live at `~/.config/pg-explorer/config` (TOML), kept owner-only (`0600`) because it stores passwords. Every successful connect saves the connection (with its password) and moves it to the top of the list. A legacy single `[connection]` table is still read. If the file fails to parse, the app shows the error and leaves the file untouched until it is fixed.
 
 ```toml
-[connection]
+[[connections]]
 host = "localhost"
 port = 5432
 user = "postgres"
 database = "mydb"
+password = "secret"
 ```
+
+Query history, favorites, and open tabs are stored per connection in `~/.config/pg-explorer/history.json` (last 500, deduplicated), `favorites.json`, and `tabs.json`.
 
 ## Keybinds
 
@@ -54,10 +59,12 @@ Also available anytime inside the app with `CTRL-H`.
 | Keys | Action |
 | ---- | ------ |
 | `ctrl+q` | Quit |
-| `ctrl+o` | Connection dialog |
+| `ctrl+o` | Connections |
 | `ctrl+b` | Toggle sidebar |
 | `ctrl+1 / 2 / 3` | Focus sidebar / editor / results |
 | `tab / shift+tab` | Cycle panel focus |
+| `ctrl+r` | Query history |
+| `ctrl+f` | Favorite queries |
 | `ctrl+h` | This help |
 | `esc` | Close dialog |
 
@@ -65,7 +72,28 @@ Also available anytime inside the app with `CTRL-H`.
 
 | Keys | Action |
 | ---- | ------ |
-| `ctrl+enter` | Execute query |
+| `ctrl+enter` | Run the statement under the cursor |
+| `ctrl+z` / `ctrl+shift+z` | Undo / redo |
+| `ctrl+s` | Save as favorite |
+
+### Tabs
+
+| Keys | Action |
+| ---- | ------ |
+| `ctrl+t` / `ctrl+w` | New / close tab (press `ctrl+w` twice if the tab has SQL) |
+| `alt+1` … `alt+9` | Jump to tab |
+| `ctrl+n` | Rename tab |
+| `click tab` | Switch to tab |
+
+### Pickers (history, favorites, connections)
+
+| Keys | Action |
+| ---- | ------ |
+| type | Filter |
+| `up / down` | Move |
+| `enter` | Pick |
+| `ctrl+s` | History: favorite · Favorites: remove |
+| `ctrl+e` / `ctrl+d` | Connections: edit / delete (press twice) |
 
 ### Sidebar
 
@@ -89,6 +117,7 @@ Also available anytime inside the app with `CTRL-H`.
 | `c` | Copy row as JSON |
 | `click` | Select row |
 | `double-click` | Copy row as JSON |
+| `click header` | Sort asc / desc / off (a capped single read-only query is re-run with `ORDER BY`; otherwise only the fetched rows are sorted) |
 
 ## Tech stack
 

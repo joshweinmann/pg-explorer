@@ -1,64 +1,133 @@
 import { BoxRenderable, CliRenderEvents, type CliRenderer, type Renderable } from "@opentui/core"
 import { Header } from "./ui/header"
 import { Sidebar } from "./ui/sidebar"
-import { Editor } from "./ui/editor"
-import { Results } from "./ui/results"
+import type { Editor } from "./ui/editor"
+import type { Results } from "./ui/results"
+import { Tabs, type Tab } from "./ui/tabs"
+import { PromptDialog } from "./ui/prompt-dialog"
 import { ConnectionDialog } from "./ui/dialog"
 import { HelpDialog } from "./ui/help-dialog"
+import { QueryPickers } from "./ui/query-pickers"
+import { ConnectionPicker, type ConnectionChoice } from "./ui/connection-picker"
 import { initialAppState, type AppState, type FocusPanel } from "./state"
 import { DbService, DbError, type DbConnection } from "./db/client"
 import {
-  defaultConfigPath,
+  connectionId,
   defaultFormValues,
   normalizeConnection,
+  removeConnection,
   saveConfig,
   toFormValues,
+  upsertConnection,
+  type AppConfig,
   type ConnectionFormValues,
   type StoredConfig,
 } from "./config/config"
+import { orderByQuery, requeryableQuery, type SortState } from "./results/sort"
+import { KeyedStore } from "./config/keyed-store"
+import { DEFAULT_TAB_NAME, validateSession, type TabSession } from "./tabs/tabs"
+import { defaultAppPaths, type AppPaths } from "./config/paths"
 import { theme } from "./theme"
+import { errorMessage } from "./errors"
 
 export class App {
   private readonly renderer: CliRenderer
   readonly state: AppState
   readonly header: Header
   readonly sidebar: Sidebar
-  readonly editor: Editor
-  readonly results: Results
+  readonly tabs: Tabs
   readonly dialog: ConnectionDialog
   readonly helpDialog: HelpDialog
+  readonly promptDialog: PromptDialog
+  readonly pickers: QueryPickers
+  readonly connectionPicker: ConnectionPicker
   readonly db: DbConnection
   private readonly configPath: string
+  private readonly tabStore: KeyedStore<TabSession>
+  private tabSaveTimer: ReturnType<typeof setTimeout> | null = null
+  private pendingCloseTabId: number | null = null
   private running = false
+  private connections: StoredConfig[] = []
+  private activeId: string | null = null
+  private lastConnectedId: string | null = null
+  private editingId: string | undefined
+  private lastConnectError = ""
+  private configLoadError: string | null = null
 
   constructor(
     renderer: CliRenderer,
     db: DbConnection = new DbService(),
-    configPath: string = defaultConfigPath(),
+    paths: AppPaths = defaultAppPaths(),
   ) {
     this.renderer = renderer
     this.state = initialAppState()
     this.db = db
-    this.configPath = configPath
+    this.configPath = paths.config
     this.header = new Header(renderer)
     this.sidebar = new Sidebar(renderer)
-    this.editor = new Editor(renderer, () => this.executeQuery())
-    this.results = new Results(renderer, (json) => this.copyRowToClipboard(json))
+    this.tabStore = new KeyedStore(paths.tabs, validateSession)
+    this.tabs = new Tabs(renderer, {
+      onSubmit: (tab) => void this.executeQuery(tab),
+      onCopy: (tab, json) => this.copyRowToClipboard(tab, json),
+      onSortRequery: (tab, sort) => this.requestSortRequery(tab, sort),
+      onChange: () => this.scheduleTabSave(),
+      onActivate: () => {
+        if (!this.anyDialogOpen() && this.state.focus !== "sidebar") this.focusPanel(this.state.focus)
+      },
+    })
     this.dialog = new ConnectionDialog(renderer, {
       onSubmit: (values) => void this.submitConnection(values),
       onCancel: () => this.focusPanel("editor"),
     })
     this.helpDialog = new HelpDialog(renderer)
+    this.promptDialog = new PromptDialog(renderer)
+    this.pickers = new QueryPickers(
+      renderer,
+      { history: paths.history, favorites: paths.favorites },
+      {
+        onPick: (query) => {
+          this.editor.setQuery(query)
+          this.focusPanel("editor")
+        },
+        onClose: () => this.focusPanel("editor"),
+        notify: (text, color) => this.results.showNotice(text, color),
+      },
+    )
+    this.connectionPicker = new ConnectionPicker(renderer, {
+      onChoose: (choice) => this.chooseConnection(choice),
+      onEdit: (config) => this.openConnectionDialog(config, { edit: true }),
+      onDelete: (config) => void this.deleteConnection(config),
+      onClose: () => this.focusPanel("editor"),
+    })
+    this.tabs.add()
     this.buildLayout()
     this.renderer.root.add(this.dialog.root)
     this.renderer.root.add(this.helpDialog.root)
+    for (const root of this.pickers.roots) this.renderer.root.add(root)
+    this.renderer.root.add(this.connectionPicker.root)
+    this.renderer.root.add(this.promptDialog.root)
+    this.renderer.once("destroy", () => this.flushTabs(this.lastConnectedId))
     this.setupKeybinds()
     this.setupFocusSync()
     this.focusPanel("editor")
   }
 
+  get editor(): Editor {
+    return this.tabs.active.editor
+  }
+
+  get results(): Results {
+    return this.tabs.active.results
+  }
+
   private anyDialogOpen(): boolean {
-    return this.dialog.isOpen || this.helpDialog.isOpen
+    return (
+      this.dialog.isOpen ||
+      this.helpDialog.isOpen ||
+      this.pickers.isOpen ||
+      this.connectionPicker.isOpen ||
+      this.promptDialog.isOpen
+    )
   }
 
   private setupFocusSync(): void {
@@ -90,14 +159,7 @@ export class App {
 
     body.add(this.sidebar.root)
 
-    const main = new BoxRenderable(this.renderer, {
-      id: "main",
-      flexGrow: 1,
-      flexDirection: "column",
-    })
-    main.add(this.editor.root)
-    main.add(this.results.root)
-    body.add(main)
+    body.add(this.tabs.container)
 
     this.renderer.root.add(this.header.root)
     this.renderer.root.add(body)
@@ -105,8 +167,22 @@ export class App {
 
   private setupKeybinds(): void {
     this.renderer.keyInput.on("keypress", (key) => {
+      if (this.pendingCloseTabId !== null && !(key.ctrl && key.name === "w")) {
+        const pending = this.tabs.all.find((tab) => tab.id === this.pendingCloseTabId)
+        this.pendingCloseTabId = null
+        pending?.results.clearNotice()
+      }
+      if (this.promptDialog.isOpen) {
+        if (key.name === "escape") {
+          key.preventDefault()
+          this.promptDialog.close()
+          this.focusPanel("editor")
+        }
+        return
+      }
       if (this.dialog.isOpen && key.name === "escape") {
         key.preventDefault()
+        this.editingId = undefined
         this.dialog.close()
         this.focusPanel("editor")
         return
@@ -121,19 +197,42 @@ export class App {
         this.dialog.moveFocus(key.name === "up" ? -1 : 1)
         return
       }
+      if (this.pickers.handleKey(key)) return
+      if (this.connectionPicker.handleKey(key)) return
       if (this.helpDialog.isOpen && (key.name === "escape" || (key.ctrl && key.name === "h"))) {
         key.preventDefault()
         this.helpDialog.close()
         return
       }
+      if (key.meta && !key.ctrl && !this.anyDialogOpen() && /^[1-9]$/.test(key.name)) {
+        key.preventDefault()
+        this.tabs.activate(Number(key.name) - 1)
+        return
+      }
       if (key.ctrl) {
         switch (key.name) {
+          case "t":
+            if (this.anyDialogOpen()) break
+            key.preventDefault()
+            this.tabs.add()
+            this.focusPanel("editor")
+            break
+          case "w":
+            if (this.anyDialogOpen()) break
+            key.preventDefault()
+            this.closeActiveTab()
+            break
+          case "n":
+            if (this.anyDialogOpen()) break
+            key.preventDefault()
+            this.renameActiveTab()
+            break
           case "q":
             key.preventDefault()
             this.quit()
             break
           case "h":
-            if (this.dialog.isOpen) break
+            if (this.anyDialogOpen() && !this.helpDialog.isOpen) break
             key.preventDefault()
             this.helpDialog.open()
             break
@@ -142,10 +241,27 @@ export class App {
             key.preventDefault()
             this.toggleSidebar()
             break
+          case "r":
+            if (this.anyDialogOpen()) break
+            key.preventDefault()
+            void this.pickers.openHistory()
+            break
+          case "f":
+            if (this.anyDialogOpen()) break
+            key.preventDefault()
+            void this.pickers.openFavorites()
+            break
+          case "s": {
+            if (this.anyDialogOpen() || this.state.focus !== "editor") break
+            key.preventDefault()
+            const target = this.editor.runTarget()
+            if (target) void this.pickers.saveFavorite(target.text)
+            break
+          }
           case "o":
             if (this.anyDialogOpen()) break
             key.preventDefault()
-            this.openConnectionDialog()
+            this.openConnectionPicker()
             break
           case "1":
             if (this.anyDialogOpen()) break
@@ -255,12 +371,71 @@ export class App {
   copySelectedRow(): void {
     const json = this.results.selectedRowJson()
     if (!json) return
-    this.copyRowToClipboard(json)
+    this.copyRowToClipboard(this.tabs.active, json)
   }
 
-  private copyRowToClipboard(json: string): void {
+  private copyRowToClipboard(tab: Tab, json: string): void {
     this.renderer.copyToClipboardOSC52(json)
-    this.results.showCopied()
+    tab.results.showCopied()
+  }
+
+  private closeActiveTab(): void {
+    const tab = this.tabs.active
+    if (tab.editor.query.trim() && this.pendingCloseTabId !== tab.id) {
+      this.pendingCloseTabId = tab.id
+      tab.results.showNotice("tab has SQL · ctrl+w again to close", theme.warning)
+      return
+    }
+    this.pendingCloseTabId = null
+    this.tabs.close(this.tabs.activeTabIndex)
+  }
+
+  private renameActiveTab(): void {
+    const index = this.tabs.activeTabIndex
+    this.promptDialog.open("Rename tab", this.tabs.active.name, (name) => {
+      this.tabs.rename(index, name)
+      this.focusPanel("editor")
+    })
+  }
+
+  // Tabs belong to the last connection that succeeded, even while a later attempt has failed.
+  private scheduleTabSave(): void {
+    if (!this.lastConnectedId) return
+    if (this.tabSaveTimer) clearTimeout(this.tabSaveTimer)
+    this.tabSaveTimer = setTimeout(() => this.flushTabs(this.lastConnectedId), 300)
+  }
+
+  private flushTabs(id: string | null): void {
+    if (this.tabSaveTimer) clearTimeout(this.tabSaveTimer)
+    this.tabSaveTimer = null
+    if (!id) return
+    const session = this.tabs.session()
+    try {
+      this.tabStore.updateSync(id, () => session)
+    } catch {
+      // Losing tab state must not block switching connections or quitting.
+    }
+  }
+
+  // First connect keeps the current tabs unless the connection has saved ones
+  // (unsaved non-empty tabs are appended); a switch always swaps the whole set.
+  private async loadTabsFor(id: string, firstConnect: boolean): Promise<void> {
+    let saved: TabSession | null = null
+    try {
+      saved = await this.tabStore.load(id)
+    } catch {
+      saved = null
+    }
+    if (firstConnect) {
+      if (!saved) return
+      const unsaved = this.tabs.session().tabs.filter((tab) => tab.query.trim())
+      this.tabs.replaceAll({
+        active: unsaved.length > 0 ? saved.tabs.length : saved.active,
+        tabs: [...saved.tabs, ...unsaved],
+      })
+      return
+    }
+    this.tabs.replaceAll(saved ?? { active: 0, tabs: [{ name: DEFAULT_TAB_NAME, query: "" }] })
   }
 
   toggleSidebar(): void {
@@ -271,58 +446,96 @@ export class App {
     }
   }
 
-  async executeQuery(): Promise<void> {
-    const query = this.editor.query.trim()
-    if (!query || this.running) return
+  async executeQuery(tab: Tab = this.tabs.active): Promise<void> {
+    const query = tab.editor.runTarget()?.text.trim()
+    if (!query) return
+    if (await this.run(tab, query, query, null)) await this.pickers.recordRun(query)
+  }
+
+  // Returns false when the capped result's query can't be re-run safely; the
+  // results panel then sorts the fetched rows instead.
+  private requestSortRequery(tab: Tab, sort: SortState | null): boolean {
+    const statement = tab.lastQuery ? requeryableQuery(tab.lastQuery) : null
+    if (!statement || this.running) return false
+    void this.rerunSorted(tab, statement, sort)
+    return true
+  }
+
+  private async rerunSorted(tab: Tab, statement: string, sort: SortState | null): Promise<void> {
+    const sql = sort ? orderByQuery(statement, sort) : statement
+    await this.run(tab, sql, tab.lastQuery ?? statement, sort, { keepRowsOnError: true })
+  }
+
+  // One query at a time across all tabs; results land in the tab that started it.
+  private async run(
+    tab: Tab,
+    sql: string,
+    sourceQuery: string,
+    sort: SortState | null,
+    options: { keepRowsOnError?: boolean } = {},
+  ): Promise<boolean> {
+    if (this.running) {
+      tab.results.showNotice("another query is still running", theme.warning)
+      return false
+    }
     if (!this.db.connected) {
-      this.results.showError("not connected to a database")
-      return
+      tab.results.showError("not connected to a database")
+      return false
     }
     this.running = true
-    this.results.setRunning()
+    tab.lastQuery = sourceQuery
+    tab.results.setRunning()
+    const alive = () => this.tabs.all.includes(tab)
     try {
-      const result = await this.db.execute(query)
-      if (result.kind === "rows") this.results.showRows(result)
-      else this.results.showCommand(result)
+      const result = await this.db.execute(sql)
+      if (!alive()) return true
+      if (result.kind === "rows") tab.results.showRows(result, sort)
+      else tab.results.showCommand(result)
+      return true
     } catch (err) {
-      if (err instanceof DbError || err instanceof Error) {
-        this.results.showError(err.message)
+      if (!alive()) return false
+      if (options.keepRowsOnError) {
+        tab.results.clearNotice()
+        tab.results.showNotice(`sort failed: ${errorMessage(err)}`, theme.error)
       } else {
-        this.results.showError(String(err))
+        tab.results.showError(errorMessage(err))
       }
+      return false
     } finally {
       this.running = false
     }
   }
 
+  startup(config: AppConfig): void {
+    this.connections = config.connections
+    this.openConnectionPicker()
+  }
+
+  openConnectionPicker(): void {
+    this.connectionPicker.open(this.connections, this.activeId)
+  }
+
+  private chooseConnection(choice: ConnectionChoice): void {
+    if (choice.kind === "new") this.openConnectionDialog()
+    else if (choice.config.password) void this.tryConnect(choice.config)
+    else this.openConnectionDialog(choice.config)
+  }
+
+  // Connects with a saved password; on failure the dialog opens prefilled with the error.
   async tryConnect(config: StoredConfig): Promise<void> {
-    this.header.setConnection("connecting", `${config.user}@${config.host}…`)
-    try {
-      await this.db.connect(config)
-      this.state.connection = "connected"
-      this.header.setConnection(
-        "connected",
-        `${config.user}@${config.host}:${config.port}/${config.database}`,
-      )
-      void this.sidebar.load(this.db)
-    } catch (err) {
-      this.state.connection = "error"
-      this.header.setConnection("error")
-      this.sidebar.reset()
-      const message = err instanceof Error ? err.message : String(err)
-      this.results.showMessage(`connection failed: ${message}`, theme.error)
+    if (await this.connect(config)) {
+      if (!this.anyDialogOpen()) this.focusPanel("editor")
+      return
     }
+    this.openConnectionDialog(config)
+    this.dialog.showError(this.lastConnectError)
   }
 
-  startup(config: StoredConfig | null): void {
-    if (!config) return
-    if (config.password) void this.tryConnect(config)
-    else this.openConnectionDialog(config)
-  }
-
-  openConnectionDialog(prefill?: StoredConfig): void {
+  openConnectionDialog(prefill?: StoredConfig, options: { edit?: boolean } = {}): void {
+    this.connectionPicker.close()
+    this.editingId = options.edit && prefill ? connectionId(prefill) : undefined
     const values = prefill ? toFormValues(prefill) : defaultFormValues()
-    this.dialog.open(values, prefill !== undefined)
+    this.dialog.open(values, prefill !== undefined && !options.edit)
   }
 
   async submitConnection(values: ConnectionFormValues): Promise<void> {
@@ -331,41 +544,73 @@ export class App {
       this.dialog.showError(normalized.error)
       return
     }
-    const config = normalized.config
     this.dialog.showConnecting()
-    this.header.setConnection("connecting", `${config.user}@${config.host}…`)
-    try {
-      await this.db.connect(config)
-      this.state.connection = "connected"
-      this.header.setConnection(
-        "connected",
-        `${config.user}@${config.host}:${config.port}/${config.database}`,
-      )
+    if (await this.connect(normalized.config, this.editingId)) {
+      this.editingId = undefined
       this.dialog.close()
       this.focusPanel("editor")
-      void this.sidebar.load(this.db)
-      try {
-        await saveConfig(config, this.configPath)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        this.results.showMessage(`connected, but failed to save config: ${message}`, theme.warning)
-      }
-    } catch (err) {
-      this.state.connection = "error"
-      this.header.setConnection("error")
-      const message = err instanceof Error ? err.message : String(err)
-      this.dialog.showError(message)
+    } else {
+      this.dialog.showError(this.lastConnectError)
     }
   }
 
+  // `replaceId` is the saved connection being edited; it is dropped in favor of `config`.
+  private async connect(config: StoredConfig, replaceId?: string): Promise<boolean> {
+    const id = connectionId(config)
+    this.header.setConnection("connecting", `${config.user}@${config.host}…`)
+    try {
+      await this.db.connect(config)
+    } catch (err) {
+      this.activeId = null
+      this.pickers.connectionKey = null
+      this.state.connection = "error"
+      this.header.setConnection("error")
+      this.sidebar.reset()
+      this.lastConnectError = errorMessage(err)
+      return false
+    }
+    const previous = this.lastConnectedId
+    if (previous !== id) this.flushTabs(previous)
+    this.activeId = id
+    this.lastConnectedId = id
+    this.pickers.connectionKey = id
+    this.state.connection = "connected"
+    this.header.setConnection("connected", id)
+    void this.sidebar.load(this.db)
+    if (previous !== id) await this.loadTabsFor(id, previous === null)
+    this.connections = upsertConnection(this.connections, config, replaceId)
+    await this.persistConnections("connected, but failed to save config")
+    return true
+  }
+
+  private async deleteConnection(config: StoredConfig): Promise<void> {
+    this.connections = removeConnection(this.connections, connectionId(config))
+    this.connectionPicker.refresh(this.connections, this.activeId)
+    await this.persistConnections("failed to save config")
+  }
+
+  private async persistConnections(failurePrefix: string): Promise<void> {
+    if (this.configLoadError) {
+      this.results.showNotice(`config not saved: fix the config file first (${this.configLoadError})`, theme.warning)
+      return
+    }
+    try {
+      await saveConfig({ connections: this.connections }, this.configPath)
+    } catch (err) {
+      this.results.showMessage(`${failurePrefix}: ${errorMessage(err)}`, theme.warning)
+    }
+  }
+
+  // The file is left untouched from here on so a parse error can't turn into lost connections.
   showConfigError(message: string): void {
+    this.configLoadError = message
     this.header.setConnection("error")
     this.results.showMessage(`config error: ${message}`, theme.error)
   }
 
   quit(): void {
     void this.db.disconnect()
-    this.editor.destroy()
     this.renderer.destroy()
+    for (const tab of this.tabs.all) tab.editor.destroy()
   }
 }

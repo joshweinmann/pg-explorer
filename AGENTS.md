@@ -27,6 +27,8 @@ bun run build          # compile standalone binary (rebuild after source changes
 - UI smoke tests use `@opentui/core/testing` (`createTestRenderer`), never a real terminal. Shared helpers live in `src/app.test.ts`: `boot()` for the harness, `fakeDb()` for the database. Assert frames with `captureCharFrame()` and colors with `captureSpans()`. Config tests use tmp-dir paths.
 - Keybinds are handled globally in `src/app.ts` via `renderer.keyInput.on("keypress")` + `key.preventDefault()` (globals run before focused-component handlers). Guard panel keys while a dialog is open.
 - Colors live only in `src/theme.ts`.
+- Every on-disk path comes from `AppPaths` (`src/config/paths.ts`); tests and scripts pass `appPathsIn(tmpDir)` so nothing touches `~/.config`. New persisted files must be added there.
+- Modal backdrops use `createOverlay` (`src/ui/overlay.ts`); closing a modal blurs its input and restores editor focus.
 - Focus sync: subscribe to `renderer.on(CliRenderEvents.FOCUSED_RENDERABLE)` and walk the focused renderable's parent chain to a panel root. The event fires *before* `hasFocusedDescendant` flags propagate, so flag checks don't work inside the handler.
 - Modals (connection dialog, help dialog): absolute-positioned overlay + high zIndex + opaque panel background, key handling guarded in `app.ts`. Close restores editor focus.
 - Selection highlight: light-gray chunk `bg` (`theme.selectBg`), never the INVERSE text attribute.

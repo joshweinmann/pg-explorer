@@ -2,6 +2,7 @@ import { createCliRenderer } from "@opentui/core"
 import { theme } from "./theme"
 import { App } from "./app"
 import { loadConfig } from "./config/config"
+import { errorMessage } from "./errors"
 
 const renderer = await createCliRenderer({
   exitOnCtrlC: true,
@@ -11,8 +12,7 @@ const renderer = await createCliRenderer({
 const app = new App(renderer)
 
 try {
-  const config = await loadConfig()
-  app.startup(config)
+  app.startup(await loadConfig())
 } catch (err) {
-  app.showConfigError(err instanceof Error ? err.message : String(err))
+  app.showConfigError(errorMessage(err))
 }

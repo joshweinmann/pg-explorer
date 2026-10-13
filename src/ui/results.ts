@@ -24,6 +24,7 @@ import {
   DEFAULT_PAGE_SIZE,
   type FormattedCell,
 } from "../results/format"
+import { nextSort, sortRows, type SortState } from "../results/sort"
 import type { QueryResult } from "../db/client"
 
 const CELL_PADDING_X = 1
@@ -40,10 +41,16 @@ export class Results {
   private readonly table: TextTableRenderable
   private readonly footer: TextRenderable
   private readonly onCopyRequest: (json: string) => void
+  private readonly onSortRequery: (sort: SortState | null) => boolean
   private readonly selectedBg = RGBA.fromHex(theme.selectBg)
 
   private columns: string[] = []
+  private baseRows: Row[] = []
   private rows: Row[] = []
+  private sort: SortState | null = null
+  private sortFromDb = false
+  private colWidths: number[] = []
+  private footerText = ""
   private truncated = false
   private rowCap: number | null = null
   private elapsedMs = 0
@@ -54,10 +61,16 @@ export class Results {
   private lastClickRow: number | null = null
   private lastClickTime = 0
 
-  constructor(renderer: CliRenderer, onCopyRequest: (json: string) => void = () => {}) {
+  constructor(
+    renderer: CliRenderer,
+    onCopyRequest: (json: string) => void = () => {},
+    onSortRequery: (sort: SortState | null) => boolean = () => false,
+    idSuffix = "",
+  ) {
     this.onCopyRequest = onCopyRequest
+    this.onSortRequery = onSortRequery
     this.root = new BoxRenderable(renderer, {
-      id: "results-panel",
+      id: `results-panel${idSuffix}`,
       width: "100%",
       flexGrow: 1,
       flexDirection: "column",
@@ -70,21 +83,21 @@ export class Results {
     })
 
     this.viewport = new ScrollBoxRenderable(renderer, {
-      id: "results-scroll",
+      id: `results-scroll${idSuffix}`,
       width: "100%",
       flexGrow: 1,
       scrollX: true,
-      onMouseDown: (event) => this.handleTableMouseDown(event.y),
+      onMouseDown: (event) => this.handleTableMouseDown(event.x, event.y),
     })
 
     this.message = new TextRenderable(renderer, {
-      id: "results-message",
+      id: `results-message${idSuffix}`,
       content: "no results yet",
       fg: theme.dim,
     })
 
     this.table = new TextTableRenderable(renderer, {
-      id: "results-table",
+      id: `results-table${idSuffix}`,
       content: [],
       visible: false,
       border: true,
@@ -101,7 +114,7 @@ export class Results {
     this.viewport.add(this.table)
 
     this.footer = new TextRenderable(renderer, {
-      id: "results-footer",
+      id: `results-footer${idSuffix}`,
       content: "",
       fg: theme.dim,
       height: 1,
@@ -121,28 +134,34 @@ export class Results {
   }
 
   showMessage(text: string, color: string): void {
+    this.baseRows = []
     this.rows = []
+    this.sort = null
     this.selectionIndex = 0
     this.windowStart = 0
     this.table.visible = false
     this.message.visible = true
     this.message.content = text
     this.message.fg = color
-    this.footer.content = ""
+    this.setFooter("")
   }
 
+  // Temporary, so a failed sort re-run can restore the footer of the rows still shown.
   setRunning(): void {
-    this.footer.content = "running…"
-    this.footer.fg = theme.dim
+    this.showNotice("running…", theme.dim)
   }
 
   showError(message: string): void {
     this.showMessage(message, theme.error)
   }
 
-  showRows(result: RowsResult): void {
+  // `sort` marks rows the database already ordered (re-run of a capped result).
+  showRows(result: RowsResult, sort: SortState | null = null): void {
     this.columns = uniqueColumnNames(result.columns)
+    this.baseRows = result.rows
     this.rows = result.rows
+    this.sort = sort
+    this.sortFromDb = sort !== null
     this.truncated = result.truncated
     this.rowCap = result.maxRows ?? null
     this.elapsedMs = result.elapsedMs
@@ -155,19 +174,56 @@ export class Results {
   }
 
   showCommand(result: CommandResult): void {
+    this.baseRows = []
     this.rows = []
+    this.sort = null
     this.selectionIndex = 0
     this.windowStart = 0
     this.table.visible = false
     this.message.visible = true
     this.message.content = `${result.commandTag} ${result.rowCount ?? ""}`.trim()
     this.message.fg = theme.success
-    this.footer.content = commandFooter(result.commandTag, result.rowCount, result.elapsedMs)
+    this.setFooter(commandFooter(result.commandTag, result.rowCount, result.elapsedMs))
   }
 
   showCopied(): void {
-    this.footer.content = "copied row to clipboard"
-    this.footer.fg = theme.success
+    this.showNotice("copied row to clipboard", theme.success)
+  }
+
+  // Temporary footer text; clearNotice() restores the regular footer.
+  showNotice(text: string, color: string): void {
+    this.footer.content = text
+    this.footer.fg = color
+  }
+
+  clearNotice(): void {
+    this.footer.content = this.footerText
+    this.footer.fg = theme.dim
+  }
+
+  private setFooter(text: string): void {
+    this.footerText = text
+    this.footer.content = text
+    this.footer.fg = theme.dim
+  }
+
+  get sortState(): SortState | null {
+    return this.sort
+  }
+
+  // Capped results are re-queried when the owner can do that safely, so the order
+  // covers every row; otherwise only the fetched rows are sorted (noted in the footer).
+  sortByColumn(column: number): void {
+    if (column < 0 || column >= this.columns.length) return
+    const next = nextSort(this.sort, column)
+    if (this.truncated && this.onSortRequery(next)) return
+    this.sort = next
+    this.sortFromDb = false
+    this.rows = next ? sortRows(this.baseRows, next) : this.baseRows
+    this.pageIndex = 0
+    this.selectionIndex = 0
+    this.windowStart = 0
+    this.renderPage()
   }
 
   nextPage(): void {
@@ -211,19 +267,19 @@ export class Results {
     this.pageIndex = page.pageIndex
     this.viewport.scrollTop = 0
 
-    const headerCells = this.columns.map((name) => truncateForDisplay(name))
+    const headerCells = this.columns.map((name, i) => this.headerText(name, i))
     const bodyRows = this.rows
       .slice(page.start, page.end)
       .map((row) => row.map((value) => formatCell(value)))
 
-    const colWidths = headerCells.map((header, i) => {
+    const colWidths = (this.colWidths = headerCells.map((header, i) => {
       let width = header.length
       for (const row of bodyRows) {
         const cell = row[i]
         if (cell) width = Math.max(width, truncateForDisplay(cell.text).length)
       }
       return Math.min(width, MAX_CELL_WIDTH)
-    })
+    }))
     const tableWidth =
       colWidths.length > 0
         ? colWidths.reduce((sum, width) => sum + width + CELL_PADDING_X * 2, 0) +
@@ -243,14 +299,18 @@ export class Results {
     const visible = bodyRows.slice(this.windowStart, this.windowStart + visibleCount)
     this.visibleCount = visible.length
 
-    const content: TextTableContent = [headerCells.map((name) => [bold(name)])]
+    const content: TextTableContent = [
+      headerCells.map((name, i) =>
+        i === this.sort?.column ? [fg(theme.focus)(bold(name))] : [bold(name)],
+      ),
+    ]
     for (const [vi, row] of visible.entries()) {
       const selected = this.windowStart + vi === this.selectionIndex
       content.push(row.map((cell) => [this.cellChunk(cell, selected)]))
     }
     this.table.content = content
 
-    this.footer.content = rowsFooter(
+    const footer = rowsFooter(
       this.rows.length,
       this.truncated,
       page.pageIndex,
@@ -258,7 +318,14 @@ export class Results {
       this.elapsedMs,
       this.rowCap ?? undefined,
     )
-    this.footer.fg = theme.dim
+    const partialSort = this.truncated && this.sort !== null && !this.sortFromDb
+    this.setFooter(partialSort ? `${footer} · sorted fetched rows` : footer)
+  }
+
+  private headerText(name: string, column: number): string {
+    if (this.sort?.column !== column) return truncateForDisplay(name)
+    const arrow = this.sort.dir === "asc" ? "▲" : "▼"
+    return `${truncateForDisplay(name, MAX_CELL_WIDTH - 2)} ${arrow}`
   }
 
   private visibleRowCapacity(tableWidth: number): number {
@@ -289,7 +356,13 @@ export class Results {
     return selected ? { ...chunk, bg: this.selectedBg } : chunk
   }
 
-  private handleTableMouseDown(y: number): void {
+  private handleTableMouseDown(x: number, y: number): void {
+    const column = this.headerColumnAt(x, y)
+    if (column !== null) {
+      this.lastClickRow = null
+      this.sortByColumn(column)
+      return
+    }
     const index = this.rowIndexAt(y)
     if (index === null) return
     const now = Date.now()
@@ -308,6 +381,17 @@ export class Results {
       const json = this.selectedRowJson()
       if (json) this.onCopyRequest(json)
     }
+  }
+
+  private headerColumnAt(x: number, y: number): number | null {
+    if (!this.table.visible || y !== this.table.screenY) return null
+    let left = this.table.screenX
+    for (const [i, width] of this.colWidths.entries()) {
+      const right = left + width + CELL_PADDING_X * 2
+      if (x >= left && x < right) return i
+      left = right + 1
+    }
+    return null
   }
 
   private rowIndexAt(y: number): number | null {

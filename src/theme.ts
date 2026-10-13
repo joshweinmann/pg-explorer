@@ -14,6 +14,8 @@ export const theme = {
   number: "#6699FF",
   comment: "#7F7F7F",
   gutter: "#FFCC00",
+  runGutterBg: "#005266",
+  overlayBg: "#000000CC",
 } as const
 
 export type ColorInput = string

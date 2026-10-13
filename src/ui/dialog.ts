@@ -8,6 +8,7 @@ import {
   type InputRenderableOptions,
 } from "@opentui/core"
 import { theme } from "../theme"
+import { createOverlay } from "./overlay"
 import { MaskedInput } from "./masked-input"
 import type { ConnectionFormValues } from "../config/config"
 
@@ -30,19 +31,7 @@ export class ConnectionDialog {
   constructor(renderer: CliRenderer, callbacks: ConnectionDialogCallbacks) {
     this.callbacks = callbacks
 
-    this.root = new BoxRenderable(renderer, {
-      id: "connection-dialog-overlay",
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      height: "100%",
-      zIndex: 100,
-      backgroundColor: "#000000CC",
-      visible: false,
-      alignItems: "center",
-      justifyContent: "center",
-    })
+    this.root = createOverlay(renderer, "connection-dialog-overlay")
 
     const panel = new BoxRenderable(renderer, {
       id: "connection-dialog",

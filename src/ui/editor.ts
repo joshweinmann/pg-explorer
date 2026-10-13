@@ -8,6 +8,7 @@ import {
 } from "@opentui/core"
 import { theme } from "../theme"
 import { tokenizeLine, type SqlTokenKind } from "../sql/highlight"
+import { runTarget, type RunTarget } from "../sql/statements"
 
 const MIN_EDITOR_HEIGHT = 3
 const EDITOR_HEIGHT_RATIO = 0.6
@@ -21,14 +22,18 @@ export class Editor {
   private readonly gutter: LineNumberRenderable
   private readonly syntaxStyle: SyntaxStyle
   private readonly styleIds: Record<SqlTokenKind, number>
+  private contentVersion = 0
+  private indicatorKey = ""
 
   constructor(
     renderer: CliRenderer,
     onSubmit: () => void,
+    options: { idSuffix?: string; onChange?: () => void } = {},
   ) {
+    const suffix = options.idSuffix ?? ""
     this.renderer = renderer
     this.root = new BoxRenderable(renderer, {
-      id: "editor-panel",
+      id: `editor-panel${suffix}`,
       width: "100%",
       height: MIN_EDITOR_HEIGHT,
       flexDirection: "column",
@@ -37,17 +42,18 @@ export class Editor {
       borderStyle: "rounded",
       borderColor: theme.border,
       focusedBorderColor: theme.focus,
+      renderBefore: () => this.refreshRunIndicator(),
     })
 
     this.row = new BoxRenderable(renderer, {
-      id: "editor-row",
+      id: `editor-row${suffix}`,
       width: "100%",
       height: MIN_EDITOR_HEIGHT - BORDERS,
       flexDirection: "row",
     })
 
     this.textarea = new TextareaRenderable(renderer, {
-      id: "query-editor",
+      id: `query-editor${suffix}`,
       width: "100%",
       height: MIN_EDITOR_HEIGHT - BORDERS,
       flexGrow: 1,
@@ -56,16 +62,22 @@ export class Editor {
       textColor: theme.fg,
       cursorColor: theme.focus,
       wrapMode: "none",
-      keyBindings: [{ name: "return", ctrl: true, action: "submit" }],
+      keyBindings: [
+        { name: "return", ctrl: true, action: "submit" },
+        { name: "z", ctrl: true, action: "undo" },
+        { name: "z", ctrl: true, shift: true, action: "redo" },
+      ],
       onSubmit,
       onContentChange: () => {
+        this.contentVersion++
         this.resizeToContent()
         this.applyHighlights()
+        options.onChange?.()
       },
     })
 
     this.gutter = new LineNumberRenderable(renderer, {
-      id: "editor-gutter",
+      id: `editor-gutter${suffix}`,
       target: this.textarea,
       minWidth: 3,
       paddingRight: 1,
@@ -120,6 +132,35 @@ export class Editor {
         })
       }
     }
+  }
+
+  // Called every frame; only touches the gutter when cursor, focus, or content changed.
+  private refreshRunIndicator(): void {
+    const focused = this.textarea.focused
+    const key = focused ? `${this.contentVersion}:${this.textarea.cursorOffset}` : "blurred"
+    if (key === this.indicatorKey) return
+    this.indicatorKey = key
+    this.gutter.clearAllLineColors()
+    if (!focused) return
+    const target = this.runTarget()
+    if (!target) return
+    const colors = new Map<number, { gutter: string; content: string }>()
+    for (let line = target.startLine; line <= target.endLine; line++) {
+      colors.set(line, { gutter: theme.runGutterBg, content: "transparent" })
+    }
+    this.gutter.setLineColors(colors)
+  }
+
+  // The statement under the cursor. The textarea reports the cursor in display
+  // cells (wide chars count 2); getTextRange maps it back to a string index.
+  runTarget(): RunTarget | null {
+    const cursor = this.textarea.getTextRange(0, this.textarea.cursorOffset).length
+    return runTarget(this.textarea.plainText, cursor)
+  }
+
+  setQuery(text: string): void {
+    this.textarea.replaceText(text)
+    this.textarea.gotoBufferEnd()
   }
 
   focus(): void {

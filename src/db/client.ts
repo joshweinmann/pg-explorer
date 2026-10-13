@@ -1,6 +1,7 @@
 import postgres from "postgres"
 import type { StoredConfig } from "../config/config"
 import { loadSchemasAndTables, loadTableColumns, type ColumnInfo, type SchemaInfo } from "./metadata"
+import { errorMessage } from "../errors"
 
 export interface DbOptions {
   connectTimeoutSeconds?: number
@@ -145,7 +146,7 @@ export class DbService {
 
 function toDbError(err: unknown): DbError {
   if (err instanceof DbError) return err
-  const message = err instanceof Error ? err.message : String(err)
+  const message = errorMessage(err)
   const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : undefined
   return new DbError(message, code)
 }

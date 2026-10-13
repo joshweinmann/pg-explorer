@@ -1,5 +1,6 @@
 import { createTestRenderer } from "@opentui/core/testing"
 import { App } from "../src/app"
+import { appPathsIn } from "../src/config/paths"
 import type { DbConnection } from "../src/db/client"
 import type { ColumnInfo, SchemaInfo } from "../src/db/metadata"
 
@@ -38,7 +39,7 @@ const db: DbConnection = {
 }
 
 const setup = await createTestRenderer({ width: 110, height: 34, kittyKeyboard: true })
-const app = new App(setup.renderer, db, "/tmp/pg-explorer-preview-config")
+const app = new App(setup.renderer, db, appPathsIn("/tmp/pg-explorer-preview"))
 await setup.flush()
 
 await app.tryConnect({ host: "localhost", port: 5432, user: "alice", database: "widgets" })
