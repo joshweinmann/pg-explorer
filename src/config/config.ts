@@ -13,6 +13,7 @@ export interface ConnectionConfig {
 
 export interface StoredConfig extends ConnectionConfig {
   password?: string
+  passwordRef?: string
   name?: string
   notes?: string
 }
@@ -38,7 +39,7 @@ export function toFormValues(config: StoredConfig): ConnectionFormValues {
     port: String(config.port),
     user: config.user,
     database: config.database,
-    password: config.password ?? "",
+    password: config.password ?? config.passwordRef ?? "",
     notes: config.notes ?? "",
   }
 }
@@ -58,7 +59,10 @@ export function normalizeConnection(values: ConnectionFormValues): { config: Sto
     return { error: "port must be a number between 1 and 65535" }
   }
   const database = values.database.trim() || user
-  const password = values.password
+  const secret = values.password
+  const isRef = secret.trim().startsWith(OP_PREFIX)
+  const password = isRef ? "" : secret
+  const passwordRef = isRef ? secret.trim() : ""
   const name = values.name.trim()
   const notes = values.notes.trim()
   return {
@@ -68,12 +72,14 @@ export function normalizeConnection(values: ConnectionFormValues): { config: Sto
       user,
       database,
       ...(password ? { password } : {}),
+      ...(passwordRef ? { passwordRef } : {}),
       ...(name ? { name } : {}),
       ...(notes ? { notes } : {}),
     },
   }
 }
 
+export const OP_PREFIX = "op://"
 export const DEFAULT_HOST = "localhost"
 export const DEFAULT_PORT = 5432
 
@@ -124,6 +130,7 @@ function parseConnection(connection: Record<string, unknown>): StoredConfig {
   const user = str(connection.user) ?? process.env.USER ?? "postgres"
   const database = str(connection.database) ?? user
   const password = str(connection.password)
+  const passwordRef = str(connection.password_ref)
   const name = str(connection.name)
   const notes = str(connection.notes)
   return {
@@ -132,6 +139,7 @@ function parseConnection(connection: Record<string, unknown>): StoredConfig {
     user,
     database,
     ...(password ? { password } : {}),
+    ...(passwordRef ? { passwordRef } : {}),
     ...(name ? { name } : {}),
     ...(notes ? { notes } : {}),
   }
@@ -165,6 +173,7 @@ export function serializeConfig(config: AppConfig): string {
       user: c.user,
       database: c.database,
       ...(c.password ? { password: c.password } : {}),
+      ...(c.passwordRef ? { password_ref: c.passwordRef } : {}),
       ...(c.notes ? { notes: c.notes } : {}),
     })),
   })

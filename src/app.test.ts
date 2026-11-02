@@ -1138,6 +1138,29 @@ describe("connections picker", () => {
     expect(frameText()).toContain("● u@a.host:5432/a")
   })
 
+  test("picking a connection with a 1Password reference connects immediately and keeps the reference", async () => {
+    const connects: StoredConfig[] = []
+    const ref: StoredConfig = { host: "r.host", port: 5432, user: "u", database: "r", passwordRef: "op://V/I/p" }
+    const app = await bootWith([ref], connects)
+    setup!.mockInput.pressArrow("down")
+    setup!.mockInput.pressEnter()
+    await waitFor(() => connects.length === 1)
+
+    expect(connects).toEqual([ref])
+    expect(app.dialog.isOpen).toBe(false)
+    expect((await savedConfig()).connections).toEqual([ref])
+  })
+
+  test("an op:// reference typed in the password field stays readable", async () => {
+    const app = await bootWith([B])
+    app.openConnectionDialog(B)
+    await setup!.flush()
+    await setup!.mockInput.typeText("op://V/I/p")
+    await setup!.flush()
+    expect(frameText()).toContain("op://V/I/p")
+    expect(app.dialog.getValues().password).toBe("op://V/I/p")
+  })
+
   test("picking a connection without a password opens the dialog on the password field", async () => {
     const app = await bootWith([A, B])
     const { mockInput, flush } = setup!

@@ -517,7 +517,7 @@ export class App {
 
   private chooseConnection(choice: ConnectionChoice): void {
     if (choice.kind === "new") this.openConnectionDialog()
-    else if (choice.config.password) void this.tryConnect(choice.config)
+    else if (choice.config.password || choice.config.passwordRef) void this.tryConnect(choice.config)
     else this.openConnectionDialog(choice.config)
   }
 

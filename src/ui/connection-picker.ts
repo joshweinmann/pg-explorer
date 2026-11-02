@@ -23,7 +23,7 @@ function preview(config: StoredConfig): string {
     ["port", String(config.port)],
     ["user", config.user],
     ["database", config.database],
-    ["password", config.password ? "saved" : "not saved"],
+    ["password", config.password ? "saved" : (config.passwordRef ?? "not saved")],
     ...(config.notes ? [["notes", config.notes]] : []),
   ]
     .map(([label, value]) => `${label!.padEnd(10)}${value}`)

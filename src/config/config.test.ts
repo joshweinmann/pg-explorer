@@ -58,6 +58,13 @@ describe("config", () => {
     expect(serializeConfig({ connections: [baseConfig] })).not.toContain("password")
   })
 
+  test("password_ref round-trips through the file", () => {
+    const config = { connections: [{ ...baseConfig, passwordRef: "op://Vault/Item/password" }] }
+    const serialized = serializeConfig(config)
+    expect(serialized).toContain('password_ref = "op://Vault/Item/password"')
+    expect(parseConfig(serialized)).toEqual(config)
+  })
+
   test("loadConfig returns an empty list for a missing file", async () => {
     expect(await loadConfig(join(dir, "does-not-exist"))).toEqual({ connections: [] })
   })
@@ -145,6 +152,17 @@ describe("normalizeConnection", () => {
     expect(result).toEqual({
       config: { host: "localhost", port: 5433, user: "alice", database: "widgets", password: "pw", name: "Prod", notes: "via SSM" },
     })
+  })
+
+  test("an op:// password becomes a reference, not a password", () => {
+    const result = normalizeConnection({ ...form, password: " op://Vault/Item/password " })
+    expect(result).toEqual({
+      config: { host: "localhost", port: 5433, user: "alice", database: "widgets", passwordRef: "op://Vault/Item/password" },
+    })
+  })
+
+  test("toFormValues puts a reference in the password field", () => {
+    expect(toFormValues({ ...baseConfig, passwordRef: "op://V/I/p" }).password).toBe("op://V/I/p")
   })
 
   test("rejects a missing user", () => {

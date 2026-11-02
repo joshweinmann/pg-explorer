@@ -6,6 +6,23 @@ import { errorMessage } from "../errors"
 export interface DbOptions {
   connectTimeoutSeconds?: number
   maxRows?: number
+  readSecret?: (ref: string) => Promise<string>
+}
+
+export async function opRead(ref: string): Promise<string> {
+  let proc
+  try {
+    proc = Bun.spawn(["op", "read", "--no-newline", ref], { stdout: "pipe", stderr: "pipe" })
+  } catch (err) {
+    throw new DbError(`1Password CLI (op) not available: ${errorMessage(err)}`, "SECRET_READ")
+  }
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  if (code !== 0) throw new DbError(`1Password: ${stderr.trim() || `op exited with ${code}`}`, "SECRET_READ")
+  return stdout
 }
 
 export const DEFAULT_MAX_ROWS = 5000
@@ -51,10 +68,12 @@ export class DbService {
   private sql: ReturnType<typeof postgres> | null = null
   private readonly maxRows: number
   private readonly connectTimeoutSeconds: number
+  private readonly readSecret: (ref: string) => Promise<string>
 
   constructor(options: DbOptions = {}) {
     this.maxRows = options.maxRows ?? DEFAULT_MAX_ROWS
     this.connectTimeoutSeconds = options.connectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS
+    this.readSecret = options.readSecret ?? opRead
   }
 
   get connected(): boolean {
@@ -63,12 +82,14 @@ export class DbService {
 
   async connect(config: StoredConfig): Promise<void> {
     await this.disconnect()
+    const password =
+      !config.password && config.passwordRef ? await this.readSecret(config.passwordRef) : config.password
     const sql = postgres({
       host: config.host,
       port: config.port,
       user: config.user,
       database: config.database,
-      password: config.password,
+      password,
       ssl: "prefer",
       connect_timeout: this.connectTimeoutSeconds,
       max: 2,

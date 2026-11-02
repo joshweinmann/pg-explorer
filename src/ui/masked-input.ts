@@ -1,4 +1,5 @@
 import { InputRenderable, type InputRenderableOptions, type KeyEvent, type RenderContext } from "@opentui/core"
+import { OP_PREFIX } from "../config/config"
 
 export class MaskedInput extends InputRenderable {
   private buffer = ""
@@ -13,7 +14,12 @@ export class MaskedInput extends InputRenderable {
 
   set realValue(value: string) {
     this.buffer = value
-    this.value = "•".repeat(value.length)
+    this.value = this.display()
+  }
+
+  // A 1Password reference is not a secret, so it stays readable.
+  private display(): string {
+    return this.buffer.startsWith(OP_PREFIX) ? this.buffer : "•".repeat(this.buffer.length)
   }
 
   override handleKeyPress(key: KeyEvent): boolean {
@@ -25,7 +31,7 @@ export class MaskedInput extends InputRenderable {
     if (key.ctrl || key.meta) return false
     if (key.name === "backspace") {
       this.buffer = this.buffer.slice(0, -1)
-      this.value = "•".repeat(this.buffer.length)
+      this.value = this.display()
       return true
     }
     // Accumulate the full sequence so pastes work, but ignore sequences with
@@ -36,7 +42,7 @@ export class MaskedInput extends InputRenderable {
       !/[\u0000-\u001f\u007f]/.test(key.sequence)
     ) {
       this.buffer += key.sequence
-      this.value = "•".repeat(this.buffer.length)
+      this.value = this.display()
       return true
     }
     return false
