@@ -977,13 +977,13 @@ describe("connection dialog", () => {
     await flush()
     expect(app.dialog.focusedFieldIndex).toBe(0)
 
-    for (let i = 0; i < 6; i++) mockInput.pressArrow("down")
+    for (let i = 0; i < 8; i++) mockInput.pressArrow("down")
     await flush()
-    expect(app.dialog.focusedFieldIndex).toBe(4)
+    expect(app.dialog.focusedFieldIndex).toBe(6)
 
     mockInput.pressArrow("down")
     await flush()
-    expect(app.dialog.focusedFieldIndex).toBe(4)
+    expect(app.dialog.focusedFieldIndex).toBe(6)
   })
 
   test("escape cancels and restores editor focus", async () => {
@@ -1005,7 +1005,7 @@ describe("connection dialog", () => {
     app.openConnectionDialog(PREFILL)
     await setup!.flush()
 
-    expect(app.dialog.focusedFieldIndex).toBe(4)
+    expect(app.dialog.focusedFieldIndex).toBe(5)
     expect(frameText()).toContain("dbhost")
 
     const { mockInput, flush } = setup!
@@ -1148,7 +1148,7 @@ describe("connections picker", () => {
 
     expect(app.dialog.isOpen).toBe(true)
     expect(app.dialog.getValues().host).toBe("b.host")
-    expect(app.dialog.focusedFieldIndex).toBe(4)
+    expect(app.dialog.focusedFieldIndex).toBe(5)
   })
 
   test("successful connect saves the password and moves it to the top", async () => {
@@ -1182,9 +1182,7 @@ describe("connections picker", () => {
     expect(app.dialog.isOpen).toBe(true)
     expect(app.dialog.focusedFieldIndex).toBe(0)
 
-    mockInput.pressArrow("down")
-    mockInput.pressArrow("down")
-    mockInput.pressArrow("down")
+    for (let i = 0; i < 4; i++) mockInput.pressArrow("down")
     await flush()
     for (let i = 0; i < 5; i++) mockInput.pressBackspace()
     await mockInput.typeText("renamed")
@@ -1193,6 +1191,21 @@ describe("connections picker", () => {
 
     const ids = (await savedConfig()).connections.map((c) => c.database)
     expect(ids).toEqual(["renamed", "b"])
+  })
+
+  test("named connections show their name in the picker and header", async () => {
+    const named = { ...A, name: "Prod Duck Lake", notes: "needs tunnel" }
+    const app = await bootWith([named, B])
+    expect(frameText()).toContain("Prod Duck Lake")
+    expect(frameText()).toContain("u@a.host:5432/a")
+
+    await setup!.mockInput.typeText("tunnel")
+    await waitFor(() => app.connectionPicker.picker.visibleItems.length === 2)
+
+    closePicker(app)
+    await app.tryConnect(named)
+    await setup!.flush()
+    expect(frameText()).toContain("● Prod Duck Lake")
   })
 
   test("ctrl+d asks for confirmation, a second ctrl+d deletes", async () => {

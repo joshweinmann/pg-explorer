@@ -18,11 +18,13 @@ const INACTIVE = "  "
 
 function preview(config: StoredConfig): string {
   return [
+    ...(config.name ? [["name", config.name]] : []),
     ["host", config.host],
     ["port", String(config.port)],
     ["user", config.user],
     ["database", config.database],
     ["password", config.password ? "saved" : "not saved"],
+    ...(config.notes ? [["notes", config.notes]] : []),
   ]
     .map(([label, value]) => `${label!.padEnd(10)}${value}`)
     .join("\n")
@@ -56,7 +58,11 @@ export class ConnectionPicker {
       plainPreview: true,
       filter: (items, text) => {
         const needle = text.trim().toLowerCase()
-        return items.filter((item) => item.value.kind === "new" || item.label.toLowerCase().includes(needle))
+        return items.filter((item) => {
+          if (item.value.kind === "new") return true
+          const { name, notes } = item.value.config
+          return [item.label, item.meta, name, notes].some((text) => text?.toLowerCase().includes(needle))
+        })
       },
     })
   }
@@ -127,8 +133,8 @@ export class ConnectionPicker {
     for (const config of connections) {
       const id = connectionId(config)
       items.push({
-        label: `${id === activeId ? ACTIVE : INACTIVE}${id}`,
-        meta: "",
+        label: `${id === activeId ? ACTIVE : INACTIVE}${config.name ?? id}`,
+        meta: config.name ? id : "",
         preview: preview(config),
         value: { kind: "saved", config },
       })

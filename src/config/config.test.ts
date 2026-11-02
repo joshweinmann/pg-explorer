@@ -34,7 +34,12 @@ const baseConfig: ConnectionConfig = {
 describe("config", () => {
   test("write → read round trip keeps every connection and password", async () => {
     const path = join(dir, "config")
-    const config = { connections: [{ ...baseConfig, password: "s3cret" }, { ...baseConfig, database: "other" }] }
+    const config = {
+      connections: [
+        { ...baseConfig, password: "s3cret", name: "Prod", notes: "tunnel first" },
+        { ...baseConfig, database: "other" },
+      ],
+    }
     await saveConfig(config, path)
     expect(await loadConfig(path)).toEqual(config)
   })
@@ -114,11 +119,13 @@ describe("connection list helpers", () => {
 
 describe("normalizeConnection", () => {
   const form = {
+    name: "",
     host: "  localhost ",
     port: "5433",
     user: " alice ",
     database: "widgets",
     password: "pw",
+    notes: "",
   }
 
   test("normalizes values and keeps the password", () => {
@@ -129,8 +136,15 @@ describe("normalizeConnection", () => {
 
   test("defaults host and port and derives database from user", () => {
     expect(
-      normalizeConnection({ host: "", port: "", user: "bob", database: "", password: "" }),
+      normalizeConnection({ name: "", host: "", port: "", user: "bob", database: "", password: "", notes: "" }),
     ).toEqual({ config: { host: DEFAULT_HOST, port: DEFAULT_PORT, user: "bob", database: "bob" } })
+  })
+
+  test("keeps trimmed name and notes, drops blank ones", () => {
+    const result = normalizeConnection({ ...form, name: " Prod ", notes: " via SSM " })
+    expect(result).toEqual({
+      config: { host: "localhost", port: 5433, user: "alice", database: "widgets", password: "pw", name: "Prod", notes: "via SSM" },
+    })
   })
 
   test("rejects a missing user", () => {
@@ -150,13 +164,15 @@ describe("normalizeConnection", () => {
   })
 
   test("toFormValues round-trips a stored config", () => {
-    const config: StoredConfig = { host: "h", port: 5432, user: "u", database: "d", password: "x" }
+    const config: StoredConfig = { host: "h", port: 5432, user: "u", database: "d", password: "x", name: "N" }
     expect(toFormValues(config)).toEqual({
+      name: "N",
       host: "h",
       port: "5432",
       user: "u",
       database: "d",
       password: "x",
+      notes: "",
     })
   })
 })

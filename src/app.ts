@@ -557,7 +557,7 @@ export class App {
   // `replaceId` is the saved connection being edited; it is dropped in favor of `config`.
   private async connect(config: StoredConfig, replaceId?: string): Promise<boolean> {
     const id = connectionId(config)
-    this.header.setConnection("connecting", `${config.user}@${config.host}…`)
+    this.header.setConnection("connecting", `${config.name ?? `${config.user}@${config.host}`}…`)
     try {
       await this.db.connect(config)
     } catch (err) {
@@ -575,7 +575,7 @@ export class App {
     this.lastConnectedId = id
     this.pickers.connectionKey = id
     this.state.connection = "connected"
-    this.header.setConnection("connected", id)
+    this.header.setConnection("connected", config.name ?? id)
     void this.sidebar.load(this.db)
     if (previous !== id) await this.loadTabsFor(id, previous === null)
     this.connections = upsertConnection(this.connections, config, replaceId)

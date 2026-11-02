@@ -12,7 +12,8 @@ import { createOverlay } from "./overlay"
 import { MaskedInput } from "./masked-input"
 import type { ConnectionFormValues } from "../config/config"
 
-const FIELD_LABELS = ["host", "port", "user", "database", "password"] as const
+const FIELD_LABELS = ["name", "host", "port", "user", "database", "password", "notes"] as const
+const PASSWORD_INDEX = FIELD_LABELS.indexOf("password")
 const DIALOG_WIDTH = 60
 const LABEL_WIDTH = 10
 
@@ -132,11 +133,10 @@ export class ConnectionDialog {
   }
 
   open(prefill: ConnectionFormValues, focusPassword = false): void {
-    this.setField(0, prefill.host)
-    this.setField(1, prefill.port)
-    this.setField(2, prefill.user)
-    this.setField(3, prefill.database)
-    const password = this.fields[4]
+    FIELD_LABELS.forEach((label, i) => {
+      if (label !== "password") this.setField(i, prefill[label])
+    })
+    const password = this.fields[PASSWORD_INDEX]
     if (password instanceof MaskedInput) password.realValue = prefill.password
 
     this.status.content = ""
@@ -144,7 +144,7 @@ export class ConnectionDialog {
     this.opened = true
     this.root.visible = true
 
-    const target = focusPassword ? this.fields[4] : this.fields[0]
+    const target = focusPassword ? this.fields[PASSWORD_INDEX] : this.fields[0]
     target?.focus()
   }
 
@@ -176,13 +176,11 @@ export class ConnectionDialog {
   }
 
   getValues(): ConnectionFormValues {
-    const password = this.fields[4]
-    return {
-      host: this.fields[0]?.value ?? "",
-      port: this.fields[1]?.value ?? "",
-      user: this.fields[2]?.value ?? "",
-      database: this.fields[3]?.value ?? "",
-      password: password instanceof MaskedInput ? password.realValue : (password?.value ?? ""),
-    }
+    const values = Object.fromEntries(
+      FIELD_LABELS.map((label, i) => [label, this.fields[i]?.value ?? ""]),
+    ) as unknown as ConnectionFormValues
+    const password = this.fields[PASSWORD_INDEX]
+    if (password instanceof MaskedInput) values.password = password.realValue
+    return values
   }
 }

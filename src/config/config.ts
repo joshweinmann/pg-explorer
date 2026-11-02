@@ -13,6 +13,8 @@ export interface ConnectionConfig {
 
 export interface StoredConfig extends ConnectionConfig {
   password?: string
+  name?: string
+  notes?: string
 }
 
 export interface AppConfig {
@@ -20,26 +22,30 @@ export interface AppConfig {
 }
 
 export interface ConnectionFormValues {
+  name: string
   host: string
   port: string
   user: string
   database: string
   password: string
+  notes: string
 }
 
 export function toFormValues(config: StoredConfig): ConnectionFormValues {
   return {
+    name: config.name ?? "",
     host: config.host,
     port: String(config.port),
     user: config.user,
     database: config.database,
     password: config.password ?? "",
+    notes: config.notes ?? "",
   }
 }
 
 export function defaultFormValues(): ConnectionFormValues {
   const user = process.env.USER ?? "postgres"
-  return { host: DEFAULT_HOST, port: String(DEFAULT_PORT), user, database: user, password: "" }
+  return { name: "", host: DEFAULT_HOST, port: String(DEFAULT_PORT), user, database: user, password: "", notes: "" }
 }
 
 export function normalizeConnection(values: ConnectionFormValues): { config: StoredConfig } | { error: string } {
@@ -53,7 +59,19 @@ export function normalizeConnection(values: ConnectionFormValues): { config: Sto
   }
   const database = values.database.trim() || user
   const password = values.password
-  return { config: { host, port, user, database, ...(password ? { password } : {}) } }
+  const name = values.name.trim()
+  const notes = values.notes.trim()
+  return {
+    config: {
+      host,
+      port,
+      user,
+      database,
+      ...(password ? { password } : {}),
+      ...(name ? { name } : {}),
+      ...(notes ? { notes } : {}),
+    },
+  }
 }
 
 export const DEFAULT_HOST = "localhost"
@@ -106,7 +124,17 @@ function parseConnection(connection: Record<string, unknown>): StoredConfig {
   const user = str(connection.user) ?? process.env.USER ?? "postgres"
   const database = str(connection.database) ?? user
   const password = str(connection.password)
-  return { host, port, user, database, ...(password ? { password } : {}) }
+  const name = str(connection.name)
+  const notes = str(connection.notes)
+  return {
+    host,
+    port,
+    user,
+    database,
+    ...(password ? { password } : {}),
+    ...(name ? { name } : {}),
+    ...(notes ? { notes } : {}),
+  }
 }
 
 // Reads `[[connections]]`; a legacy single `[connection]` table becomes a one-item list.
@@ -131,11 +159,13 @@ export function parseConfig(toml: string): AppConfig {
 export function serializeConfig(config: AppConfig): string {
   return stringifyToml({
     connections: config.connections.map((c) => ({
+      ...(c.name ? { name: c.name } : {}),
       host: c.host,
       port: c.port,
       user: c.user,
       database: c.database,
       ...(c.password ? { password: c.password } : {}),
+      ...(c.notes ? { notes: c.notes } : {}),
     })),
   })
 }

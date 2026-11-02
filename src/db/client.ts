@@ -69,6 +69,7 @@ export class DbService {
       user: config.user,
       database: config.database,
       password: config.password,
+      ssl: "prefer",
       connect_timeout: this.connectTimeoutSeconds,
       max: 2,
       idle_timeout: 5,
