@@ -1,4 +1,10 @@
-import { BoxRenderable, CliRenderEvents, type CliRenderer, type Renderable } from "@opentui/core"
+import {
+  BoxRenderable,
+  CliRenderEvents,
+  type CliRenderer,
+  type KeyEvent,
+  type Renderable,
+} from "@opentui/core"
 import { Header } from "./ui/header"
 import { Sidebar } from "./ui/sidebar"
 import type { Editor } from "./ui/editor"
@@ -9,6 +15,8 @@ import { ConnectionDialog } from "./ui/dialog"
 import { HelpDialog } from "./ui/help-dialog"
 import { QueryPickers } from "./ui/query-pickers"
 import { ConnectionPicker, type ConnectionChoice } from "./ui/connection-picker"
+import { CompletionPopup } from "./ui/completion-popup"
+import { complete, statementTables } from "./sql/complete"
 import { initialAppState, type AppState, type FocusPanel } from "./state"
 import { DbService, DbError, type DbConnection } from "./db/client"
 import {
@@ -41,6 +49,9 @@ export class App {
   readonly promptDialog: PromptDialog
   readonly pickers: QueryPickers
   readonly connectionPicker: ConnectionPicker
+  readonly completion: CompletionPopup
+  private completionManual = false
+  private applyingCompletion = false
   readonly db: DbConnection
   private readonly configPath: string
   private readonly tabStore: KeyedStore<TabSession>
@@ -65,13 +76,24 @@ export class App {
     this.configPath = paths.config
     this.header = new Header(renderer)
     this.sidebar = new Sidebar(renderer)
+    this.completion = new CompletionPopup(renderer)
     this.tabStore = new KeyedStore(paths.tabs, validateSession)
     this.tabs = new Tabs(renderer, {
-      onSubmit: (tab) => void this.executeQuery(tab),
+      onSubmit: (tab) => {
+        this.closeCompletion()
+        void this.executeQuery(tab)
+      },
       onCopy: (tab, json) => this.copyRowToClipboard(tab, json),
       onSortRequery: (tab, sort) => this.requestSortRequery(tab, sort),
       onChange: () => this.scheduleTabSave(),
+      onEdit: (tab, grew) => {
+        if (grew || this.completion.isOpen) this.updateCompletion(tab)
+      },
+      onCursorMove: (tab) => {
+        if (this.completion.isOpen) this.updateCompletion(tab)
+      },
       onActivate: () => {
+        this.closeCompletion()
         if (!this.anyDialogOpen() && this.state.focus !== "sidebar") this.focusPanel(this.state.focus)
       },
     })
@@ -101,6 +123,7 @@ export class App {
     })
     this.tabs.add()
     this.buildLayout()
+    this.renderer.root.add(this.completion.root)
     this.renderer.root.add(this.dialog.root)
     this.renderer.root.add(this.helpDialog.root)
     for (const root of this.pickers.roots) this.renderer.root.add(root)
@@ -132,6 +155,7 @@ export class App {
 
   private setupFocusSync(): void {
     this.renderer.on(CliRenderEvents.FOCUSED_RENDERABLE, (renderable: Renderable | null) => {
+      if (renderable !== this.editor.textarea) this.closeCompletion()
       if (!renderable || this.dialog.isOpen) return
       const panel = this.panelFor(renderable)
       if (panel) this.state.focus = panel
@@ -204,6 +228,7 @@ export class App {
         this.helpDialog.close()
         return
       }
+      if (this.completion.isOpen && this.handleCompletionKey(key)) return
       if (key.meta && !key.ctrl && !this.anyDialogOpen() && /^[1-9]$/.test(key.name)) {
         key.preventDefault()
         this.tabs.activate(Number(key.name) - 1)
@@ -258,6 +283,12 @@ export class App {
             if (target) void this.pickers.saveFavorite(target.text)
             break
           }
+          case "space":
+            if (this.anyDialogOpen() || this.state.focus !== "editor") break
+            key.preventDefault()
+            this.completionManual = true
+            this.updateCompletion(this.tabs.active)
+            break
           case "o":
             if (this.anyDialogOpen()) break
             key.preventDefault()
@@ -346,6 +377,76 @@ export class App {
         }
       }
     })
+  }
+
+  private handleCompletionKey(key: KeyEvent): boolean {
+    if (key.ctrl || key.meta) return false
+    switch (key.name) {
+      case "up":
+      case "down":
+        key.preventDefault()
+        this.completion.move(key.name === "up" ? -1 : 1)
+        return true
+      case "tab":
+      case "return":
+        if (key.shift) return false
+        key.preventDefault()
+        this.acceptCompletion()
+        return true
+      case "escape":
+        key.preventDefault()
+        this.closeCompletion()
+        return true
+    }
+    return false
+  }
+
+  private updateCompletion(tab: Tab): void {
+    if (this.applyingCompletion) return
+    const editor = tab.editor
+    if (tab !== this.tabs.active || !editor.textarea.focused || this.anyDialogOpen()) {
+      this.closeCompletion()
+      return
+    }
+    const text = editor.query
+    const cursor = editor.cursorIndex()
+    const schemas = this.sidebar.loadedSchemas
+    const result = complete(text, cursor, schemas, this.completionManual)
+    if (result) {
+      const back = cursor - result.start
+      this.completion.show(result, () => editor.screenPosition(back))
+    } else {
+      this.closeCompletion()
+    }
+
+    const missing = statementTables(text, cursor, schemas).filter((ref) => ref.table.columns === null)
+    if (missing.length === 0) return
+    const manual = this.completionManual
+    void Promise.all(
+      missing.map((ref) => this.sidebar.ensureColumns(ref.schema, ref.table).catch(() => {})),
+    ).then(() => {
+      if (editor.query !== text || editor.cursorIndex() !== cursor) return
+      this.completionManual = manual
+      this.updateCompletion(tab)
+    })
+  }
+
+  private acceptCompletion(): void {
+    const current = this.completion.current
+    const item = this.completion.selectedItem
+    if (!current || !item) return
+    this.applyingCompletion = true
+    try {
+      this.editor.replaceBeforeCursor(current.end - current.start, item.insert)
+    } finally {
+      this.applyingCompletion = false
+    }
+    this.closeCompletion()
+  }
+
+  private closeCompletion(): void {
+    this.completionManual = false
+    this.completion.hide()
   }
 
   focusPanel(panel: FocusPanel): void {

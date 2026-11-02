@@ -24,11 +24,17 @@ export class Editor {
   private readonly styleIds: Record<SqlTokenKind, number>
   private contentVersion = 0
   private indicatorKey = ""
+  private lastLength = 0
 
   constructor(
     renderer: CliRenderer,
     onSubmit: () => void,
-    options: { idSuffix?: string; onChange?: () => void } = {},
+    options: {
+      idSuffix?: string
+      onChange?: () => void
+      onEdit?: (grew: boolean) => void
+      onCursorMove?: () => void
+    } = {},
   ) {
     const suffix = options.idSuffix ?? ""
     this.renderer = renderer
@@ -73,7 +79,12 @@ export class Editor {
         this.resizeToContent()
         this.applyHighlights()
         options.onChange?.()
+        const length = this.textarea.plainText.length
+        const grew = length > this.lastLength
+        this.lastLength = length
+        options.onEdit?.(grew)
       },
+      onCursorChange: () => options.onCursorMove?.(),
     })
 
     this.gutter = new LineNumberRenderable(renderer, {
@@ -153,9 +164,27 @@ export class Editor {
 
   // The statement under the cursor. The textarea reports the cursor in display
   // cells (wide chars count 2); getTextRange maps it back to a string index.
+  cursorIndex(): number {
+    return this.textarea.getTextRange(0, this.textarea.cursorOffset).length
+  }
+
   runTarget(): RunTarget | null {
-    const cursor = this.textarea.getTextRange(0, this.textarea.cursorOffset).length
-    return runTarget(this.textarea.plainText, cursor)
+    return runTarget(this.textarea.plainText, this.cursorIndex())
+  }
+
+  // Screen cell `back` columns left of the cursor; callers pass ASCII-only spans.
+  screenPosition(back: number): { x: number; y: number } {
+    const cursor = this.textarea.visualCursor
+    return {
+      x: this.textarea.screenX + cursor.visualCol - back,
+      y: this.textarea.screenY + cursor.visualRow,
+    }
+  }
+
+  replaceBeforeCursor(length: number, text: string): void {
+    const { row, col } = this.textarea.logicalCursor
+    if (length > 0) this.textarea.deleteRange(row, col - length, row, col)
+    this.textarea.insertText(text)
   }
 
   setQuery(text: string): void {

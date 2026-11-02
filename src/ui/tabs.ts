@@ -35,6 +35,8 @@ export interface TabHooks {
   onCopy: (tab: Tab, json: string) => void
   onSortRequery: (tab: Tab, sort: SortState | null) => boolean
   onChange: () => void
+  onEdit: (tab: Tab, grew: boolean) => void
+  onCursorMove: (tab: Tab) => void
   onActivate: (tab: Tab) => void
 }
 
@@ -93,6 +95,8 @@ export class Tabs {
     const editor = new Editor(this.renderer, () => this.hooks.onSubmit(tab), {
       idSuffix: suffix,
       onChange: () => this.hooks.onChange(),
+      onEdit: (grew) => this.hooks.onEdit(tab, grew),
+      onCursorMove: () => this.hooks.onCursorMove(tab),
     })
     const results = new Results(
       this.renderer,

@@ -2138,3 +2138,102 @@ describe("help dialog", () => {
     expect(app.dialog.isOpen).toBe(true)
   })
 })
+
+describe("autocomplete", () => {
+  async function connected(db = fakeDb()): Promise<App> {
+    const app = await boot(100, 30, db)
+    await app.tryConnect({ host: "h", port: 5432, user: "u", database: "d" })
+    await setup!.flush()
+    return app
+  }
+
+  test("typing a word opens suggestions below it and tab accepts", async () => {
+    const app = await connected()
+    const { mockInput, flush } = setup!
+
+    await mockInput.typeText("select * from us")
+    await flush()
+    expect(app.completion.isOpen).toBe(true)
+    expect(frameText()).toContain("app.users")
+
+    mockInput.pressTab()
+    await flush()
+    expect(app.completion.isOpen).toBe(false)
+    expect(app.editor.query).toBe("select * from app.users")
+    expect(app.state.focus).toBe("editor")
+  })
+
+  test("arrows move the selection, enter accepts without a newline", async () => {
+    const app = await connected()
+    const { mockInput, flush } = setup!
+
+    await mockInput.typeText("select * from a")
+    await flush()
+    expect(app.completion.current?.items.map((i) => i.label)).toEqual([
+      "app.active_users",
+      "app.users",
+      "archive.old_orders",
+    ])
+    mockInput.pressArrow("down")
+    await flush()
+    mockInput.pressEnter()
+    await flush()
+    expect(app.editor.query).toBe("select * from app.users")
+  })
+
+  test("columns load lazily for referenced tables and resolve aliases", async () => {
+    let columnLoads = 0
+    const app = await connected(
+      fakeDb({
+        loadTableColumns: async () => {
+          columnLoads++
+          return TEST_COLUMNS.map((c) => ({ ...c }))
+        },
+      }),
+    )
+    const { mockInput, flush } = setup!
+
+    await mockInput.typeText("select u.")
+    await flush()
+    expect(app.completion.isOpen).toBe(false)
+    app.editor.setQuery("select u. from app.users u")
+    app.editor.textarea.setCursor(0, 9)
+    mockInput.pressKey(" ", { ctrl: true })
+    await waitFor(() => app.completion.current?.items.length === 3)
+    expect(app.completion.current?.items.map((i) => i.label)).toEqual(["email", "id", "org_id"])
+    expect(columnLoads).toBe(1)
+  })
+
+  test("esc closes, ctrl+space reopens, backspace alone does not open", async () => {
+    const app = await connected()
+    const { mockInput, flush } = setup!
+
+    await mockInput.typeText("sel")
+    await flush()
+    expect(app.completion.isOpen).toBe(true)
+    mockInput.pressEscape()
+    await flush()
+    expect(app.completion.isOpen).toBe(false)
+
+    mockInput.pressBackspace()
+    await flush()
+    expect(app.completion.isOpen).toBe(false)
+
+    mockInput.pressKey(" ", { ctrl: true })
+    await flush()
+    expect(app.completion.isOpen).toBe(true)
+    expect(app.completion.selectedItem?.insert).toBe("select")
+  })
+
+  test("leaving the editor closes the popup and tab cycles focus again", async () => {
+    const app = await connected()
+    const { mockInput, flush } = setup!
+
+    await mockInput.typeText("sel")
+    await flush()
+    mockInput.pressKey("3", { ctrl: true })
+    await flush()
+    expect(app.completion.isOpen).toBe(false)
+    expect(app.state.focus).toBe("results")
+  })
+})

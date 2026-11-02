@@ -40,6 +40,7 @@ export class Sidebar {
   private schemas: SchemaInfo[] = []
   private expandedSchemas = new Set<string>()
   private expandedTables = new Set<string>()
+  private columnLoads = new Map<string, Promise<void>>()
   private rows: SidebarRow[] = []
   private rowRenderables: TextRenderable[] = []
   private cursorIndex = 0
@@ -102,6 +103,7 @@ export class Sidebar {
     this.schemas = []
     this.expandedSchemas.clear()
     this.expandedTables.clear()
+    this.columnLoads.clear()
     this.cursorIndex = 0
     this.setMessage(message, color)
   }
@@ -111,6 +113,7 @@ export class Sidebar {
     this.setMessage("loading metadata…", theme.dim)
     try {
       this.schemas = await db.loadSchemasAndTables()
+      this.columnLoads.clear()
       this.cursorIndex = 0
       this.renderRows()
     } catch (err) {
@@ -154,17 +157,35 @@ export class Sidebar {
       }
       const tableInfo = this.findTable(schema, table)
       if (!tableInfo) return
-      if (tableInfo.columns === null && this.db) {
-        try {
-          tableInfo.columns = await this.db.loadTableColumns(schema, table)
-        } catch (err) {
-          this.showError(`metadata error: ${errorMessage(err)}`)
-          return
-        }
+      try {
+        await this.ensureColumns(schema, tableInfo)
+      } catch (err) {
+        this.showError(`metadata error: ${errorMessage(err)}`)
+        return
       }
       this.expandedTables.add(key)
       this.renderRows()
     }
+  }
+
+  get loadedSchemas(): SchemaInfo[] {
+    return this.schemas
+  }
+
+  async ensureColumns(schema: string, table: TableInfo): Promise<void> {
+    if (table.columns !== null || !this.db) return
+    const key = `${schema}.${table.name}`
+    let pending = this.columnLoads.get(key)
+    if (!pending) {
+      pending = this.db
+        .loadTableColumns(schema, table.name)
+        .then((columns) => {
+          table.columns = columns
+        })
+        .finally(() => this.columnLoads.delete(key))
+      this.columnLoads.set(key, pending)
+    }
+    await pending
   }
 
   private findTable(schema: string, table: string): TableInfo | undefined {

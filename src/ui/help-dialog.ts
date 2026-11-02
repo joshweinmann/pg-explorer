@@ -39,6 +39,8 @@ const COLUMNS: HelpSection[][] = [
         ["ctrl+z", "undo"],
         ["ctrl+shift+z", "redo"],
         ["ctrl+s", "save as favorite"],
+        ["ctrl+space", "autocomplete"],
+        ["tab / enter", "accept suggestion"],
       ],
     },
     {
