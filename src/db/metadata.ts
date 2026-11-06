@@ -114,3 +114,81 @@ export async function loadTableColumns(
   `
   return mergeColumns(columns, constraints)
 }
+
+export interface IndexInfo {
+  name: string
+  summary: string
+  unique: boolean
+}
+
+export interface ConstraintInfo {
+  name: string
+  definition: string
+}
+
+export interface TriggerInfo {
+  name: string
+  summary: string
+  enabled: boolean
+}
+
+export interface TableDetails {
+  indexes: IndexInfo[]
+  constraints: ConstraintInfo[]
+  triggers: TriggerInfo[]
+}
+
+export function indexSummary(definition: string): string {
+  const at = definition.indexOf(" USING ")
+  return at < 0 ? definition : definition.slice(at + " USING ".length)
+}
+
+export function triggerSummary(definition: string): string {
+  const match = / ((?:BEFORE|AFTER|INSTEAD OF) .+?) ON .* EXECUTE (?:FUNCTION|PROCEDURE) (.+)$/s.exec(definition)
+  return match ? `${match[1]} ${match[2]}` : definition
+}
+
+export async function loadTableDetails(
+  sql: SqlInstance,
+  schema: string,
+  table: string,
+): Promise<TableDetails> {
+  const indexes = await sql<{ name: string; definition: string; unique: boolean }[]>`
+    SELECT i.relname AS name, pg_get_indexdef(ix.indexrelid) AS definition, ix.indisunique AS unique
+    FROM pg_index ix
+    JOIN pg_class i ON i.oid = ix.indexrelid
+    JOIN pg_class t ON t.oid = ix.indrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = ${schema} AND t.relname = ${table}
+    ORDER BY i.relname
+  `
+  const constraints = await sql<ConstraintInfo[]>`
+    SELECT c.conname AS name, pg_get_constraintdef(c.oid) AS definition
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = ${schema} AND t.relname = ${table} AND c.contype <> 'n'
+    ORDER BY c.conname
+  `
+  const triggers = await sql<{ name: string; definition: string; enabled: string }[]>`
+    SELECT tg.tgname AS name, pg_get_triggerdef(tg.oid) AS definition, tg.tgenabled AS enabled
+    FROM pg_trigger tg
+    JOIN pg_class t ON t.oid = tg.tgrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = ${schema} AND t.relname = ${table} AND NOT tg.tgisinternal
+    ORDER BY tg.tgname
+  `
+  return {
+    indexes: indexes.map((row) => ({
+      name: row.name,
+      summary: indexSummary(row.definition),
+      unique: row.unique,
+    })),
+    constraints: constraints.map((row) => ({ name: row.name, definition: row.definition })),
+    triggers: triggers.map((row) => ({
+      name: row.name,
+      summary: triggerSummary(row.definition),
+      enabled: row.enabled !== "D",
+    })),
+  }
+}

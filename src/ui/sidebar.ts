@@ -14,7 +14,7 @@ import {
 import { theme } from "../theme"
 import { errorMessage } from "../errors"
 import type { DbConnection } from "../db/client"
-import type { ColumnInfo, SchemaInfo, TableInfo } from "../db/metadata"
+import type { ColumnInfo, SchemaInfo, TableDetails, TableInfo } from "../db/metadata"
 
 interface SidebarRow {
   id: string
@@ -23,6 +23,8 @@ interface SidebarRow {
   schema?: string
   table?: string
 }
+
+type Group = "columns" | "indexes" | "constraints" | "triggers"
 
 const EXPANDED = "▾"
 const COLLAPSED = "▸"
@@ -41,12 +43,15 @@ export class Sidebar {
   private expandedSchemas = new Set<string>()
   private expandedTables = new Set<string>()
   private columnLoads = new Map<string, Promise<void>>()
+  private details = new Map<string, TableDetails>()
+  private detailLoads = new Map<string, Promise<void>>()
+  private toggledGroups = new Set<string>()
   private rows: SidebarRow[] = []
   private rowRenderables: TextRenderable[] = []
   private cursorIndex = 0
   private lastClickRowId: string | null = null
   private lastClickTime = 0
-  private selectedBg = RGBA.fromHex(theme.selectBg)
+  private selectedFg = RGBA.fromHex(theme.selectFg)
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer
@@ -104,6 +109,9 @@ export class Sidebar {
     this.expandedSchemas.clear()
     this.expandedTables.clear()
     this.columnLoads.clear()
+    this.details.clear()
+    this.detailLoads.clear()
+    this.toggledGroups.clear()
     this.cursorIndex = 0
     this.setMessage(message, color)
   }
@@ -114,6 +122,8 @@ export class Sidebar {
     try {
       this.schemas = await db.loadSchemasAndTables()
       this.columnLoads.clear()
+      this.details.clear()
+      this.detailLoads.clear()
       this.cursorIndex = 0
       this.renderRows()
     } catch (err) {
@@ -138,6 +148,13 @@ export class Sidebar {
   async toggleCurrent(): Promise<void> {
     const row = this.rows[this.cursorIndex]
     if (!row) return
+    if (row.id.startsWith("g:")) {
+      const key = row.id.slice(2)
+      if (this.toggledGroups.has(key)) this.toggledGroups.delete(key)
+      else this.toggledGroups.add(key)
+      this.renderRows()
+      return
+    }
     if (row.id.startsWith("s:")) {
       const schema = row.schema ?? row.id.slice(2)
       if (this.expandedSchemas.has(schema)) this.expandedSchemas.delete(schema)
@@ -158,7 +175,7 @@ export class Sidebar {
       const tableInfo = this.findTable(schema, table)
       if (!tableInfo) return
       try {
-        await this.ensureColumns(schema, tableInfo)
+        await Promise.all([this.ensureColumns(schema, tableInfo), this.ensureDetails(schema, table)])
       } catch (err) {
         this.showError(`metadata error: ${errorMessage(err)}`)
         return
@@ -184,6 +201,22 @@ export class Sidebar {
         })
         .finally(() => this.columnLoads.delete(key))
       this.columnLoads.set(key, pending)
+    }
+    await pending
+  }
+
+  private async ensureDetails(schema: string, table: string): Promise<void> {
+    const key = `${schema}.${table}`
+    if (this.details.has(key) || !this.db) return
+    let pending = this.detailLoads.get(key)
+    if (!pending) {
+      pending = this.db
+        .loadTableDetails(schema, table)
+        .then((details) => {
+          this.details.set(key, details)
+        })
+        .finally(() => this.detailLoads.delete(key))
+      this.detailLoads.set(key, pending)
     }
     await pending
   }
@@ -220,13 +253,14 @@ export class Sidebar {
     this.rows = this.computeRows()
     this.clearRowRenderables()
     this.message.visible = this.rows.length === 0
-    this.fitWidth()
+    const maxWidth = this.fitWidth() - 4
 
     for (const [index, row] of this.rows.entries()) {
+      const fitted = fitChunks(row.chunks, maxWidth)
       const chunks =
         index === this.cursorIndex
-          ? row.chunks.map((chunk) => ({ ...chunk, bg: this.selectedBg }))
-          : row.chunks
+          ? fitted.map((chunk) => ({ ...chunk, fg: this.selectedFg }))
+          : fitted
       const renderable = new TextRenderable(this.renderer, {
         id: row.id,
         content: new StyledText(chunks),
@@ -265,13 +299,15 @@ export class Sidebar {
     }
   }
 
-  private fitWidth(): void {
+  private fitWidth(): number {
     const maxRowWidth = this.rows.reduce((max, row) => {
       const width = row.chunks.reduce((sum, chunk) => sum + chunk.text.length, 0)
       return Math.max(max, width)
     }, 0)
-    const cap = Math.floor(this.renderer.terminalWidth / 2)
-    this.root.width = Math.max(MIN_WIDTH, Math.min(maxRowWidth + 3, cap))
+    const cap = Math.floor(this.renderer.terminalWidth * 0.75)
+    const width = Math.max(MIN_WIDTH, Math.min(maxRowWidth + 4, cap))
+    this.root.width = width
+    return width
   }
 
   private ensureCursorVisible(): void {
@@ -321,31 +357,99 @@ export class Sidebar {
           ],
         })
         if (tableExpanded && table.columns) {
-          rows.push(
-            ...table.columns.map((column) => this.columnRow(schema.name, table.name, column)),
-          )
+          rows.push(...this.tableRows(schema.name, table.name, table.columns))
         }
       }
     }
     return rows
   }
 
-  private columnRow(schema: string, table: string, column: ColumnInfo): SidebarRow {
-    const chunks: TextChunk[] = [
-      { __isChunk: true, text: "    " },
-      fg(theme.fg)(column.name),
-      dim(` :${column.dataType}`),
-    ]
-    if (column.isPrimaryKey) chunks.push(fg(theme.warning)(" [PK]"))
-    if (column.isForeignKey) chunks.push(fg(theme.fk)(" [FK]"))
-    if (!column.nullable) chunks.push(fg(theme.error)(" NN"))
-    return {
-      id: `c:${schema}\u0001${table}\u0001${column.name}`,
+  private tableRows(schema: string, table: string, columns: ColumnInfo[]): SidebarRow[] {
+    const details = this.details.get(`${schema}.${table}`)
+    const item = (kind: string, name: string, chunks: TextChunk[]): SidebarRow => ({
+      id: `${kind}:${schema}\u0001${table}\u0001${name}`,
+      depth: 3,
+      schema,
+      table,
+      chunks: [{ __isChunk: true, text: "      " }, fg(theme.fg)(name), ...chunks],
+    })
+    const rows = this.groupRows(schema, table, "columns", columns.map((column) => this.columnRow(item, column)))
+    if (!details) return rows
+    rows.push(
+      ...this.groupRows(
+        schema,
+        table,
+        "indexes",
+        details.indexes.map((index) =>
+          item("i", index.name, [
+            dim(` ${index.summary}`),
+            ...(index.unique ? [fg(theme.warning)(" [UQ]")] : []),
+          ]),
+        ),
+      ),
+      ...this.groupRows(
+        schema,
+        table,
+        "constraints",
+        details.constraints.map((constraint) =>
+          item("k", constraint.name, [dim(` ${constraint.definition}`)]),
+        ),
+      ),
+      ...this.groupRows(
+        schema,
+        table,
+        "triggers",
+        details.triggers.map((trigger) =>
+          item("r", trigger.name, [
+            dim(` ${trigger.summary}`),
+            ...(trigger.enabled ? [] : [fg(theme.error)(" disabled")]),
+          ]),
+        ),
+      ),
+    )
+    return rows
+  }
+
+  private groupRows(schema: string, table: string, group: Group, items: SidebarRow[]): SidebarRow[] {
+    const key = `${schema}\u0001${table}\u0001${group}`
+    const expanded = (group === "columns") !== this.toggledGroups.has(key)
+    const marker = items.length === 0 ? " " : expanded ? EXPANDED : COLLAPSED
+    const header: SidebarRow = {
+      id: `g:${key}`,
       depth: 2,
       schema,
       table,
-      chunks,
+      chunks: [
+        { __isChunk: true, text: `    ${marker} ` },
+        fg(items.length === 0 ? theme.dim : theme.fg)(group),
+        dim(` (${items.length})`),
+      ],
     }
+    return expanded ? [header, ...items] : [header]
+  }
+
+  private columnRow(
+    item: (kind: string, name: string, chunks: TextChunk[]) => SidebarRow,
+    column: ColumnInfo,
+  ): SidebarRow {
+    const chunks: TextChunk[] = [dim(` :${column.dataType}`)]
+    if (column.isPrimaryKey) chunks.push(fg(theme.warning)(" [PK]"))
+    if (column.isForeignKey) chunks.push(fg(theme.fk)(" [FK]"))
+    if (!column.nullable) chunks.push(fg(theme.error)(" NN"))
+    return item("c", column.name, chunks)
   }
 }
 
+function fitChunks(chunks: TextChunk[], maxWidth: number): TextChunk[] {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.text.length, 0)
+  if (total <= maxWidth) return chunks
+  const fitted: TextChunk[] = []
+  let remaining = maxWidth - 1
+  for (const chunk of chunks) {
+    if (remaining <= 0) break
+    fitted.push({ ...chunk, text: chunk.text.slice(0, remaining) })
+    remaining -= chunk.text.length
+  }
+  fitted.push(dim("…"))
+  return fitted
+}

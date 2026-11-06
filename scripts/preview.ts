@@ -34,8 +34,10 @@ const db: DbConnection = {
     truncated: false,
     elapsedMs: 3.21,
   }),
+  cancel: () => {},
   loadSchemasAndTables: async () => schemas,
   loadTableColumns: async () => columns,
+  loadTableDetails: async () => ({ indexes: [], constraints: [], triggers: [] }),
 }
 
 const setup = await createTestRenderer({ width: 110, height: 34, kittyKeyboard: true })

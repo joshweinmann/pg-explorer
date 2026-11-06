@@ -29,26 +29,20 @@ const COLUMNS: HelpSection[][] = [
         ["ctrl+r", "query history"],
         ["ctrl+f", "favorite queries"],
         ["ctrl+h", "this help"],
-        ["esc", "close dialog"],
       ],
     },
     {
       title: "Editor",
       rows: [
         ["ctrl+enter", "run statement at cursor"],
-        ["ctrl+z", "undo"],
-        ["ctrl+shift+z", "redo"],
+        ["ctrl+x", "explain statement"],
         ["ctrl+s", "save as favorite"],
         ["ctrl+space", "autocomplete"],
-        ["tab / enter", "accept suggestion"],
       ],
     },
     {
       title: "Pickers",
       rows: [
-        ["type", "filter"],
-        ["up / down", "move"],
-        ["enter", "pick"],
         ["ctrl+s", "favorite / unfavorite"],
         ["ctrl+e / ctrl+d", "edit / delete connection"],
       ],
@@ -58,22 +52,15 @@ const COLUMNS: HelpSection[][] = [
     {
       title: "Sidebar",
       rows: [
-        ["up / down", "move cursor"],
-        ["enter / space", "expand / collapse"],
         ["r", "refresh schemas"],
-        ["click", "select row"],
-        ["double-click", "expand / collapse"],
       ],
     },
     {
       title: "Results",
       rows: [
-        ["up / down", "move row selection"],
-        ["left / right", "scroll sideways"],
         ["home / end", "first / last row"],
         ["pgup/pgdn, p/n", "previous / next page"],
         ["c", "copy row as JSON"],
-        ["click", "select row"],
         ["double-click", "copy row as JSON"],
         ["click header", "sort asc / desc / off"],
       ],
@@ -84,7 +71,6 @@ const COLUMNS: HelpSection[][] = [
         ["ctrl+t / ctrl+w", "new / close tab"],
         ["alt+1 … 9", "jump to tab"],
         ["ctrl+n", "rename tab"],
-        ["click tab", "switch to tab"],
       ],
     },
   ],

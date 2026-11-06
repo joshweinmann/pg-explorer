@@ -15,6 +15,7 @@ import { theme } from "../theme"
 import {
   commandFooter,
   formatCell,
+  formatElapsed,
   MAX_CELL_WIDTH,
   paginate,
   rowsFooter,
@@ -29,6 +30,7 @@ import type { QueryResult } from "../db/client"
 
 const CELL_PADDING_X = 1
 const DOUBLE_CLICK_MS = 350
+const WHEEL_ROWS = 3
 
 type Row = unknown[]
 type RowsResult = Extract<QueryResult, { kind: "rows" }>
@@ -39,10 +41,11 @@ export class Results {
   readonly viewport: ScrollBoxRenderable
   private readonly message: TextRenderable
   private readonly table: TextTableRenderable
+  private readonly plan: TextRenderable
   private readonly footer: TextRenderable
   private readonly onCopyRequest: (json: string) => void
   private readonly onSortRequery: (sort: SortState | null) => boolean
-  private readonly selectedBg = RGBA.fromHex(theme.selectBg)
+  private readonly selectedFg = RGBA.fromHex(theme.selectFg)
 
   private columns: string[] = []
   private baseRows: Row[] = []
@@ -54,9 +57,11 @@ export class Results {
   private truncated = false
   private rowCap: number | null = null
   private elapsedMs = 0
+  private runningTimer: ReturnType<typeof setInterval> | null = null
   private pageIndex = 0
   private selectionIndex = 0
   private windowStart = 0
+  private followSelection = true
   private visibleCount = 0
   private lastClickRow: number | null = null
   private lastClickTime = 0
@@ -88,6 +93,11 @@ export class Results {
       flexGrow: 1,
       scrollX: true,
       onMouseDown: (event) => this.handleTableMouseDown(event.x, event.y),
+      onMouseScroll: (event) => {
+        if (event.modifiers.shift) return
+        if (event.scroll?.direction === "up") this.scrollRows(-WHEEL_ROWS)
+        else if (event.scroll?.direction === "down") this.scrollRows(WHEEL_ROWS)
+      },
     })
 
     this.message = new TextRenderable(renderer, {
@@ -110,8 +120,16 @@ export class Results {
       cellPaddingY: 0,
     })
 
+    this.plan = new TextRenderable(renderer, {
+      id: `results-plan${idSuffix}`,
+      content: "",
+      visible: false,
+      wrapMode: "none",
+    })
+
     this.viewport.add(this.message)
     this.viewport.add(this.table)
+    this.viewport.add(this.plan)
 
     this.footer = new TextRenderable(renderer, {
       id: `results-footer${idSuffix}`,
@@ -140,6 +158,7 @@ export class Results {
     this.selectionIndex = 0
     this.windowStart = 0
     this.table.visible = false
+    this.plan.visible = false
     this.message.visible = true
     this.message.content = text
     this.message.fg = color
@@ -148,7 +167,23 @@ export class Results {
 
   // Temporary, so a failed sort re-run can restore the footer of the rows still shown.
   setRunning(): void {
-    this.showNotice("running…", theme.dim)
+    const started = performance.now()
+    const tick = () => {
+      this.footer.content = `running… ${((performance.now() - started) / 1000).toFixed(1)}s`
+    }
+    this.showNotice("", theme.dim)
+    tick()
+    this.runningTimer = setInterval(tick, 100)
+  }
+
+  destroy(): void {
+    this.stopRunningTimer()
+  }
+
+  private stopRunningTimer(): void {
+    if (this.runningTimer === null) return
+    clearInterval(this.runningTimer)
+    this.runningTimer = null
   }
 
   showError(message: string): void {
@@ -157,6 +192,11 @@ export class Results {
 
   // `sort` marks rows the database already ordered (re-run of a capped result).
   showRows(result: RowsResult, sort: SortState | null = null): void {
+    if (result.columns.length === 1 && result.columns[0] === "QUERY PLAN") {
+      this.showPlan(result)
+      return
+    }
+    this.plan.visible = false
     this.columns = uniqueColumnNames(result.columns)
     this.baseRows = result.rows
     this.rows = result.rows
@@ -173,6 +213,24 @@ export class Results {
     this.renderPage()
   }
 
+  private showPlan(result: RowsResult): void {
+    const lines = result.rows.map((row) => String(row[0] ?? ""))
+    this.baseRows = []
+    this.rows = []
+    this.sort = null
+    this.selectionIndex = 0
+    this.windowStart = 0
+    this.table.visible = false
+    this.message.visible = false
+    this.plan.content = lines.join("\n")
+    this.plan.width = Math.max(1, ...lines.map((line) => line.length))
+    this.plan.height = Math.max(1, lines.length)
+    this.plan.visible = true
+    this.viewport.scrollTop = 0
+    this.viewport.scrollLeft = 0
+    this.setFooter(`query plan · ${formatElapsed(result.elapsedMs)}`)
+  }
+
   showCommand(result: CommandResult): void {
     this.baseRows = []
     this.rows = []
@@ -180,6 +238,7 @@ export class Results {
     this.selectionIndex = 0
     this.windowStart = 0
     this.table.visible = false
+    this.plan.visible = false
     this.message.visible = true
     this.message.content = `${result.commandTag} ${result.rowCount ?? ""}`.trim()
     this.message.fg = theme.success
@@ -192,16 +251,19 @@ export class Results {
 
   // Temporary footer text; clearNotice() restores the regular footer.
   showNotice(text: string, color: string): void {
+    this.stopRunningTimer()
     this.footer.content = text
     this.footer.fg = color
   }
 
   clearNotice(): void {
+    this.stopRunningTimer()
     this.footer.content = this.footerText
     this.footer.fg = theme.dim
   }
 
   private setFooter(text: string): void {
+    this.stopRunningTimer()
     this.footerText = text
     this.footer.content = text
     this.footer.fg = theme.dim
@@ -243,13 +305,29 @@ export class Results {
   }
 
   moveSelection(delta: number): void {
+    if (this.plan.visible) {
+      this.viewport.scrollTop += delta
+      return
+    }
     const count = this.pageRows().length
     if (count === 0) return
     this.selectionIndex = Math.min(Math.max(0, this.selectionIndex + delta), count - 1)
     this.renderPage()
   }
 
+  private scrollRows(delta: number): void {
+    if (!this.table.visible || this.rows.length === 0) return
+    this.windowStart = Math.max(0, this.windowStart + delta)
+    this.followSelection = false
+    this.renderPage()
+    this.followSelection = true
+  }
+
   goToSelectionEdge(first: boolean): void {
+    if (this.plan.visible) {
+      this.viewport.scrollTop = first ? 0 : this.viewport.scrollHeight
+      return
+    }
     const count = this.pageRows().length
     if (count === 0) return
     this.selectionIndex = first ? 0 : count - 1
@@ -291,9 +369,11 @@ export class Results {
 
     this.selectionIndex = Math.min(this.selectionIndex, Math.max(0, bodyRows.length - 1))
     const visibleCount = this.visibleRowCapacity(tableWidth)
-    if (this.selectionIndex < this.windowStart) this.windowStart = this.selectionIndex
-    if (this.selectionIndex >= this.windowStart + visibleCount) {
-      this.windowStart = this.selectionIndex - visibleCount + 1
+    if (this.followSelection) {
+      if (this.selectionIndex < this.windowStart) this.windowStart = this.selectionIndex
+      if (this.selectionIndex >= this.windowStart + visibleCount) {
+        this.windowStart = this.selectionIndex - visibleCount + 1
+      }
     }
     this.windowStart = Math.min(this.windowStart, Math.max(0, bodyRows.length - visibleCount))
     const visible = bodyRows.slice(this.windowStart, this.windowStart + visibleCount)
@@ -353,7 +433,7 @@ export class Results {
         chunk = { __isChunk: true, text }
         break
     }
-    return selected ? { ...chunk, bg: this.selectedBg } : chunk
+    return selected ? { ...chunk, fg: this.selectedFg } : chunk
   }
 
   private handleTableMouseDown(x: number, y: number): void {

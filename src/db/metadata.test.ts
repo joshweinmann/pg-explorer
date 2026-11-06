@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mergeColumns, rowsToSchemas } from "./metadata"
+import { indexSummary, mergeColumns, rowsToSchemas, triggerSummary } from "./metadata"
 
 describe("rowsToSchemas", () => {
   test("groups tables by schema and sorts both levels", () => {
@@ -57,5 +57,28 @@ describe("mergeColumns", () => {
   test("no constraints leaves plain columns", () => {
     const merged = mergeColumns(columns, [])
     expect(merged.every((c) => !c.isPrimaryKey && !c.isForeignKey)).toBe(true)
+  })
+})
+
+describe("indexSummary", () => {
+  test("keeps the method, columns, and predicate", () => {
+    expect(indexSummary("CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)")).toBe("btree (id)")
+    expect(
+      indexSummary("CREATE INDEX live ON public.users USING btree (email) WHERE (deleted_at IS NULL)"),
+    ).toBe("btree (email) WHERE (deleted_at IS NULL)")
+  })
+})
+
+describe("triggerSummary", () => {
+  test("keeps timing, events, and function", () => {
+    expect(
+      triggerSummary(
+        "CREATE TRIGGER audit BEFORE INSERT OR UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION audit_fn()",
+      ),
+    ).toBe("BEFORE INSERT OR UPDATE audit_fn()")
+  })
+
+  test("falls back to the full definition", () => {
+    expect(triggerSummary("something else")).toBe("something else")
   })
 })

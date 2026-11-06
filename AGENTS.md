@@ -31,7 +31,7 @@ bun run build          # compile standalone binary (rebuild after source changes
 - Modal backdrops use `createOverlay` (`src/ui/overlay.ts`); closing a modal blurs its input and restores editor focus.
 - Focus sync: subscribe to `renderer.on(CliRenderEvents.FOCUSED_RENDERABLE)` and walk the focused renderable's parent chain to a panel root. The event fires *before* `hasFocusedDescendant` flags propagate, so flag checks don't work inside the handler.
 - Modals (connection dialog, help dialog): absolute-positioned overlay + high zIndex + opaque panel background, key handling guarded in `app.ts`. Close restores editor focus.
-- Selection highlight: light-gray chunk `bg` (`theme.selectBg`), never the INVERSE text attribute.
+- Selection highlight: cyan chunk `fg` (`theme.selectFg`) in panels, orange (`theme.popupSelectFg`) in popups and pickers; never a background color or the INVERSE text attribute.
 - Results table is windowed (header + visible slice, sticky header). Capacity must reserve the horizontal-scrollbar row when the table overflows — the ScrollBox outer height includes it. Rows must stay single-line (`sanitizeCellText` in `results/format.ts`); copy-as-JSON uses raw values.
 - Mouse: hit-testing returns the ScrollBox content box, so attach row handlers to the viewport and rely on event bubbling. Set `selectable: false` on click-handled text. Double-click detection is manual (no native click count) — consume the pair after firing so consecutive double-clicks don't double-toggle.
 - Editor highlighting: `SyntaxStyle` + `registerStyle` per token kind, applied via `addHighlight` on every content change. The line-number gutter needs the editor's inner row Box height to track the editor height.

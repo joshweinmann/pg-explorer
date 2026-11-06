@@ -1,6 +1,13 @@
 import postgres from "postgres"
 import type { StoredConfig } from "../config/config"
-import { loadSchemasAndTables, loadTableColumns, type ColumnInfo, type SchemaInfo } from "./metadata"
+import {
+  loadSchemasAndTables,
+  loadTableColumns,
+  loadTableDetails,
+  type ColumnInfo,
+  type SchemaInfo,
+  type TableDetails,
+} from "./metadata"
 import { errorMessage } from "../errors"
 
 export interface DbOptions {
@@ -50,8 +57,10 @@ export interface DbConnection {
   connect(config: StoredConfig): Promise<void>
   disconnect(): Promise<void>
   execute(query: string): Promise<QueryResult>
+  cancel(): void
   loadSchemasAndTables(): Promise<SchemaInfo[]>
   loadTableColumns(schema: string, table: string): Promise<ColumnInfo[]>
+  loadTableDetails(schema: string, table: string): Promise<TableDetails>
 }
 
 export class DbError extends Error {
@@ -69,6 +78,7 @@ export class DbService {
   private readonly maxRows: number
   private readonly connectTimeoutSeconds: number
   private readonly readSecret: (ref: string) => Promise<string>
+  private pending: { cancel(): void } | null = null
 
   constructor(options: DbOptions = {}) {
     this.maxRows = options.maxRows ?? DEFAULT_MAX_ROWS
@@ -116,8 +126,10 @@ export class DbService {
     const sql = this.sql
     if (!sql) throw new DbError("not connected", "NO_CONNECTION")
     const started = performance.now()
+    const pending = sql.unsafe(query)
+    this.pending = pending
     try {
-      const result = await sql.unsafe(query)
+      const result = await pending
       const elapsedMs = performance.now() - started
       const columns = (result.columns ?? []).map((column) => column.name)
       if (columns.length > 0) {
@@ -151,8 +163,15 @@ export class DbService {
       }
     } catch (err) {
       throw toDbError(err)
+    } finally {
+      if (this.pending === pending) this.pending = null
     }
   }
+
+  cancel(): void {
+    this.pending?.cancel()
+  }
+
   async loadSchemasAndTables(): Promise<SchemaInfo[]> {
     const sql = this.sql
     if (!sql) throw new DbError("not connected", "NO_CONNECTION")
@@ -163,6 +182,12 @@ export class DbService {
     const sql = this.sql
     if (!sql) throw new DbError("not connected", "NO_CONNECTION")
     return loadTableColumns(sql, schema, table)
+  }
+
+  async loadTableDetails(schema: string, table: string): Promise<TableDetails> {
+    const sql = this.sql
+    if (!sql) throw new DbError("not connected", "NO_CONNECTION")
+    return loadTableDetails(sql, schema, table)
   }
 }
 

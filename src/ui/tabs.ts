@@ -59,6 +59,7 @@ export class Tabs {
       id: "main",
       flexGrow: 1,
       flexDirection: "column",
+      paddingTop: 1,
     })
     this.bar = new TextRenderable(renderer, {
       id: "tab-bar",
@@ -170,6 +171,7 @@ export class Tabs {
 
   private destroyTab(tab: Tab): void {
     tab.editor.destroy()
+    tab.results.destroy()
     this.container.remove(tab.editor.root)
     this.container.remove(tab.results.root)
     tab.editor.root.destroyRecursively()

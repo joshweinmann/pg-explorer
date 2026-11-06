@@ -57,7 +57,9 @@ export class App {
   private readonly tabStore: KeyedStore<TabSession>
   private tabSaveTimer: ReturnType<typeof setTimeout> | null = null
   private pendingCloseTabId: number | null = null
-  private running = false
+  private currentRun: Promise<void> | null = null
+  private runId = 0
+  private quitting = false
   private connections: StoredConfig[] = []
   private activeId: string | null = null
   private lastConnectedId: string | null = null
@@ -283,6 +285,11 @@ export class App {
             if (target) void this.pickers.saveFavorite(target.text)
             break
           }
+          case "x":
+            if (this.anyDialogOpen() || this.state.focus !== "editor") break
+            key.preventDefault()
+            void this.explainQuery()
+            break
           case "space":
             if (this.anyDialogOpen() || this.state.focus !== "editor") break
             key.preventDefault()
@@ -553,11 +560,18 @@ export class App {
     if (await this.run(tab, query, query, null)) await this.pickers.recordRun(query)
   }
 
+  async explainQuery(tab: Tab = this.tabs.active): Promise<void> {
+    const query = tab.editor.runTarget()?.text.trim()
+    if (!query) return
+    const explain = `EXPLAIN ${query}`
+    await this.run(tab, explain, explain, null)
+  }
+
   // Returns false when the capped result's query can't be re-run safely; the
   // results panel then sorts the fetched rows instead.
   private requestSortRequery(tab: Tab, sort: SortState | null): boolean {
     const statement = tab.lastQuery ? requeryableQuery(tab.lastQuery) : null
-    if (!statement || this.running) return false
+    if (!statement || this.currentRun) return false
     void this.rerunSorted(tab, statement, sort)
     return true
   }
@@ -567,7 +581,8 @@ export class App {
     await this.run(tab, sql, tab.lastQuery ?? statement, sort, { keepRowsOnError: true })
   }
 
-  // One query at a time across all tabs; results land in the tab that started it.
+  // One query at a time across all tabs; a new run cancels the current one, and
+  // results land in the tab that started it.
   private async run(
     tab: Tab,
     sql: string,
@@ -575,18 +590,21 @@ export class App {
     sort: SortState | null,
     options: { keepRowsOnError?: boolean } = {},
   ): Promise<boolean> {
-    if (this.running) {
-      tab.results.showNotice("another query is still running", theme.warning)
-      return false
+    const id = ++this.runId
+    while (this.currentRun) {
+      this.db.cancel()
+      await this.currentRun
+      if (id !== this.runId) return false
     }
     if (!this.db.connected) {
       tab.results.showError("not connected to a database")
       return false
     }
-    this.running = true
+    let finished = () => {}
+    this.currentRun = new Promise((resolve) => (finished = resolve))
     tab.lastQuery = sourceQuery
     tab.results.setRunning()
-    const alive = () => this.tabs.all.includes(tab)
+    const alive = () => !this.quitting && this.tabs.all.includes(tab)
     try {
       const result = await this.db.execute(sql)
       if (!alive()) return true
@@ -595,6 +613,11 @@ export class App {
       return true
     } catch (err) {
       if (!alive()) return false
+      if (id !== this.runId) {
+        if (options.keepRowsOnError) tab.results.clearNotice()
+        else tab.results.showMessage("query cancelled", theme.warning)
+        return false
+      }
       if (options.keepRowsOnError) {
         tab.results.clearNotice()
         tab.results.showNotice(`sort failed: ${errorMessage(err)}`, theme.error)
@@ -603,7 +626,8 @@ export class App {
       }
       return false
     } finally {
-      this.running = false
+      this.currentRun = null
+      finished()
     }
   }
 
@@ -710,8 +734,13 @@ export class App {
   }
 
   quit(): void {
+    this.quitting = true
+    this.db.cancel()
     void this.db.disconnect()
     this.renderer.destroy()
-    for (const tab of this.tabs.all) tab.editor.destroy()
+    for (const tab of this.tabs.all) {
+      tab.editor.destroy()
+      tab.results.destroy()
+    }
   }
 }

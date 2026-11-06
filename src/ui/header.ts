@@ -1,7 +1,7 @@
 import {
+  ASCIIFontRenderable,
   BoxRenderable,
   TextRenderable,
-  TextAttributes,
   type CliRenderer,
 } from "@opentui/core"
 import { theme } from "../theme"
@@ -29,18 +29,19 @@ export class Header {
     this.root = new BoxRenderable(renderer, {
       id: "header",
       width: "100%",
-      height: 1,
+      height: 2,
       flexDirection: "row",
       alignItems: "center",
       paddingLeft: 1,
       paddingRight: 1,
     })
 
-    const title = new TextRenderable(renderer, {
+    const title = new ASCIIFontRenderable(renderer, {
       id: "header-title",
-      content: "PG EXPLORER",
-      fg: theme.fk,
-      attributes: TextAttributes.BOLD,
+      text: "PG EXPLORER",
+      font: "tiny",
+      color: theme.fk,
+      selectable: false,
     })
 
     const spacer = new BoxRenderable(renderer, {

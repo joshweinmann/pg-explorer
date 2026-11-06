@@ -74,7 +74,7 @@ export class PickerDialog<T> {
   private readonly previewBox: BoxRenderable
   private readonly hint: TextRenderable
   private readonly onPick: (value: T) => void
-  private readonly selectedBg = RGBA.fromHex(theme.selectBg)
+  private readonly selectedFg = RGBA.fromHex(theme.popupSelectFg)
 
   private source: PickerSource<T> | null = null
   private filtered: PickerItem<T>[] = []
@@ -263,7 +263,7 @@ export class PickerDialog<T> {
       const label = fg(theme.fg)(fit(item.label, labelWidth))
       const meta = fg(theme.dim)(` ${item.meta.padStart(metaWidth)} `)
       if (this.top + i === this.selection) {
-        chunks.push({ ...label, bg: this.selectedBg }, { ...meta, bg: this.selectedBg })
+        chunks.push({ ...label, fg: this.selectedFg }, { ...meta, fg: this.selectedFg })
       } else {
         chunks.push(label, meta)
       }

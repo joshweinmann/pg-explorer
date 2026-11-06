@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { App } from "./app"
 import type { DbConnection, QueryResult } from "./db/client"
-import type { ColumnInfo, SchemaInfo } from "./db/metadata"
+import type { ColumnInfo, SchemaInfo, TableDetails } from "./db/metadata"
 import { parseConfig, type StoredConfig } from "./config/config"
 import { theme } from "./theme"
 import { appPathsIn } from "./config/paths"
@@ -47,6 +47,15 @@ const TEST_COLUMNS: ColumnInfo[] = [
   { name: "org_id", dataType: "bigint", nullable: true, isPrimaryKey: false, isForeignKey: true },
 ]
 
+const TEST_DETAILS: TableDetails = {
+  indexes: [
+    { name: "users_pkey", summary: "btree (id)", unique: true },
+    { name: "users_org_idx", summary: "btree (org_id)", unique: false },
+  ],
+  constraints: [{ name: "users_org_fk", definition: "FOREIGN KEY (org_id) REFERENCES orgs(id)" }],
+  triggers: [],
+}
+
 function fakeDb(overrides: Partial<DbConnection> = {}): DbConnection {
   return {
     connected: true,
@@ -55,8 +64,10 @@ function fakeDb(overrides: Partial<DbConnection> = {}): DbConnection {
     execute: async (): Promise<QueryResult> => {
       throw new Error("not implemented")
     },
+    cancel: () => {},
     loadSchemasAndTables: async () => TEST_SCHEMAS.map((s) => ({ ...s, tables: s.tables.map((t) => ({ ...t })) })),
     loadTableColumns: async () => TEST_COLUMNS.map((c) => ({ ...c })),
+    loadTableDetails: async () => structuredClone(TEST_DETAILS),
     ...overrides,
   }
 }
@@ -90,7 +101,7 @@ describe("app skeleton", () => {
   test("renders header, panels, and placeholders", async () => {
     await boot()
     const frame = frameText()
-    expect(frame).toContain("PG EXPLORER")
+    expect(frame).toContain("█▀█ █▀▀   █▀▀ ▀▄▀ █▀█ █   █▀█ █▀█ █▀▀ █▀█")
     expect(frame).toContain("● disconnected")
     expect(frame).toContain("not connected")
     expect(frame).toContain("no results yet")
@@ -149,6 +160,38 @@ describe("app skeleton", () => {
     await flush()
     expect(app.editor.query).toBe("SELECT 1")
     expect(frameText()).toContain("SELECT 1")
+  })
+
+  test("ctrl+x runs EXPLAIN on the statement at the cursor", async () => {
+    const executed: string[] = []
+    const db = fakeDb({
+      execute: async (sql) => {
+        executed.push(sql)
+        return {
+          kind: "rows",
+          columns: ["QUERY PLAN"],
+          rows: [
+            ["Sort  (cost=15.37..15.62 rows=101 width=16)"],
+            ["  ->  Seq Scan on users  (cost=0.00..1.01 rows=1 width=4)"],
+          ],
+          rowCount: 2,
+          truncated: false,
+          elapsedMs: 1,
+        }
+      },
+    })
+    await boot(120, 30, db)
+    const { mockInput, flush } = setup!
+    await mockInput.typeText("SELECT * FROM users")
+    mockInput.pressKey("x", { ctrl: true })
+    await waitFor(() => executed.length === 1)
+    await flush()
+    expect(executed[0]).toBe("EXPLAIN SELECT * FROM users")
+    const frame = frameText()
+    expect(frame).toContain("Sort  (cost=15.37..15.62 rows=101 width=16)")
+    expect(frame).toContain("  ->  Seq Scan on users  (cost=0.00..1.01 rows=1 width=4)")
+    expect(frame).not.toContain("QUERY PLAN")
+    expect(frame).toContain("query plan ·")
   })
 
   test("empty query on ctrl+enter is a no-op", async () => {
@@ -275,7 +318,7 @@ describe("query loop", () => {
     expect(frameText()).toContain("not connected to a database")
   })
 
-  test("up and down move the row selection with a gray highlight", async () => {
+  test("up and down move the row selection with highlighted text", async () => {
     const db = fakeDb({
       execute: async () => ({
         kind: "rows",
@@ -299,16 +342,16 @@ describe("query loop", () => {
 
     mockInput.pressArrow("up")
     await flush()
-    expect(grayHighlighted("a")).toBe(true)
+    expect(highlighted("a")).toBe(true)
 
     for (let i = 0; i < 10; i++) mockInput.pressArrow("down")
     await flush()
-    expect(grayHighlighted("c")).toBe(true)
-    expect(grayHighlighted("b")).toBe(false)
+    expect(highlighted("c")).toBe(true)
+    expect(highlighted("b")).toBe(false)
 
     mockInput.pressArrow("up")
     await flush()
-    expect(grayHighlighted("b")).toBe(true)
+    expect(highlighted("b")).toBe(true)
   })
 
   test("long result sets window with a sticky header", async () => {
@@ -338,6 +381,28 @@ describe("query loop", () => {
     expect(frame).toContain("value")
     expect(frame).toContain("row-21")
     expect(frame).not.toContain("row-01")
+  })
+
+  test("mouse wheel scrolls result rows without moving the selection", async () => {
+    const rows = Array.from({ length: 30 }, (_, i) => [`row-${String(i + 1).padStart(2, "0")}`])
+    const app = await boot(100, 30, fakeDb({
+      execute: async () => ({ kind: "rows", columns: ["value"], rows, rowCount: 30, truncated: false, elapsedMs: 1 }),
+    }))
+    await runQuery("SELECT 1")
+    const table = setup!.renderer.root.findDescendantById("results-table") as unknown as { screenY: number }
+    const { mockMouse, flush } = setup!
+
+    await mockMouse.scroll(50, table.screenY + 2, "down")
+    await mockMouse.scroll(50, table.screenY + 2, "down")
+    await flush()
+    expect(frameText()).not.toContain("row-06")
+    expect(frameText()).toContain("row-07")
+    expect(app.results.selectedRowJson()).toBe('{"value":"row-01"}')
+
+    await mockMouse.scroll(50, table.screenY + 2, "up")
+    await flush()
+    expect(frameText()).toContain("row-04")
+    expect(frameText()).not.toContain("row-03")
   })
 
   test("wide tables with a scrollbar keep the bottom selected row visible", async () => {
@@ -441,17 +506,17 @@ describe("query loop", () => {
     return Math.abs(Math.round(actual * 255) - expected) <= 20
   }
 
-  function grayHighlighted(text: string): boolean {
-    const [r, g, b] = blendedRgb(theme.selectBg)
+  function highlighted(text: string): boolean {
+    const [r, g, b] = blendedRgb(theme.selectFg)
     return setup!
       .captureSpans()
       .lines.flatMap((line) => line.spans)
       .some(
         (span) =>
           span.text.includes(text) &&
-          channelClose(span.bg.r, r) &&
-          channelClose(span.bg.g, g) &&
-          channelClose(span.bg.b, b),
+          channelClose(span.fg.r, r) &&
+          channelClose(span.fg.g, g) &&
+          channelClose(span.fg.b, b),
       )
   }
 
@@ -554,7 +619,10 @@ describe("query loop", () => {
     await mockInput.typeText("SELECT pg_sleep(1)")
     mockInput.pressEnter({ ctrl: true })
     await flush()
-    expect(frameText()).toContain("running…")
+    expect(frameText()).toContain("running… 0.0s")
+    await Bun.sleep(250)
+    await flush()
+    expect(frameText()).toMatch(/running… 0\.[2-9]s/)
 
     resolveQuery?.()
     await flush()
@@ -696,6 +764,54 @@ describe("sidebar tree", () => {
     expect(app.sidebar.cursor).toBe(5)
   })
 
+  test("table groups show columns expanded and other groups collapsed", async () => {
+    const app = await boot(120, 30, fakeDb())
+    await app.tryConnect({ host: "h", port: 5432, user: "u", database: "d" })
+    await setup!.flush()
+
+    const { mockInput, flush } = setup!
+    mockInput.pressKey("1", { ctrl: true })
+    await flush()
+    mockInput.pressEnter()
+    await flush()
+    mockInput.pressArrow("down")
+    await flush()
+    mockInput.pressEnter()
+    await flush()
+
+    let frame = frameText()
+    expect(frame).toContain("▾ columns (3)")
+    expect(frame).toContain("id :integer")
+    expect(frame).toContain("▸ indexes (2)")
+    expect(frame).toContain("▸ constraints (1)")
+    expect(frame).toContain("triggers (0)")
+    expect(frame).not.toContain("users_pkey")
+
+    for (let i = 0; i < 5; i++) {
+      mockInput.pressArrow("down")
+      await flush()
+    }
+    mockInput.pressEnter()
+    await flush()
+    frame = frameText()
+    expect(frame).toContain("▾ indexes (2)")
+    expect(frame).toContain("users_pkey btree (id) [UQ]")
+    expect(frame).toContain("users_org_idx btree (org_id)")
+
+    mockInput.pressArrow("up")
+    await flush()
+    mockInput.pressArrow("up")
+    await flush()
+    mockInput.pressArrow("up")
+    await flush()
+    mockInput.pressArrow("up")
+    await flush()
+    mockInput.pressEnter()
+    await flush()
+    expect(frameText()).toContain("▸ columns (3)")
+    expect(frameText()).not.toContain("id :integer")
+  })
+
   test("r refreshes schemas when connected", async () => {
     let schemaLoads = 0
     const db = fakeDb({
@@ -823,54 +939,58 @@ describe("sidebar interaction", () => {
     const app = await bootConnected()
     const { mockMouse, flush } = setup!
 
-    await mockMouse.click(5, 3)
+    await mockMouse.click(5, 4)
     await flush()
     expect(app.sidebar.cursor).toBe(1)
 
-    await mockMouse.doubleClick(5, 2)
+    await mockMouse.doubleClick(5, 3)
     await flush()
     expect(frameText()).toContain("users")
 
-    await mockMouse.doubleClick(5, 3)
+    await mockMouse.doubleClick(5, 4)
     await flush()
     expect(frameText()).toContain("id :integer")
 
-    await mockMouse.doubleClick(5, 3)
+    await mockMouse.doubleClick(5, 4)
     await flush()
     expect(frameText()).not.toContain("id :integer")
   })
 
-  test("selection uses a light gray background instead of inverse", async () => {
+  test("selection uses highlighted text", async () => {
     await bootConnected()
     const frame = setup!.captureSpans()
-    const [r, g, b] = blendedRgb(theme.selectBg)
-    const hasSelectionBg = frame.lines.some((line) =>
+    const [r, g, b] = blendedRgb(theme.selectFg)
+    const hasSelectionFg = frame.lines.some((line) =>
       line.spans.some(
         (span) =>
-          channelClose(span.bg.r, r) &&
-          channelClose(span.bg.g, g) &&
-          channelClose(span.bg.b, b),
+          span.text.includes("app") &&
+          channelClose(span.fg.r, r) &&
+          channelClose(span.fg.g, g) &&
+          channelClose(span.fg.b, b),
       ),
     )
-    expect(hasSelectionBg).toBe(true)
+    expect(hasSelectionFg).toBe(true)
   })
 
   test("sidebar width auto-fits to the widest visible row with a cap", async () => {
     const app = await bootConnected([
       {
-        name: "a_schema_with_a_very_long_name_measuring_over_forty_characters",
+        name: "a_schema_with_a_very_long_name_measuring_well_over_seventy_five_characters_wide",
         tables: [{ name: "t", kind: "table", columns: null }],
       },
     ])
     const { mockInput, flush } = setup!
 
-    expect(app.sidebar.root.width).toBe(50)
+    expect(app.sidebar.root.width).toBe(75)
 
     mockInput.pressKey("1", { ctrl: true })
     await flush()
     mockInput.pressEnter()
     await flush()
-    expect(app.sidebar.root.width).toBe(50)
+    expect(app.sidebar.root.width).toBe(75)
+    const row = frameText().split("\n").find((line) => line.includes("a_schema_with"))!
+    expect(row).toMatch(/…\s*│/)
+    expect(row).not.toContain("characters_wide")
   })
 
   test("cursor movement scrolls the list at the edges", async () => {
@@ -2021,15 +2141,14 @@ describe("tabs", () => {
     expect(app.editor.query).toBe("SELECT 1")
   })
 
-  test("one query at a time; results land in the tab that ran it", async () => {
-    let resolve: (value: QueryResult) => void = () => {}
-    let calls = 0
+  test("a new run cancels the running query; results land in the tab that ran it", async () => {
+    const pending: { resolve: (value: QueryResult) => void; reject: (err: Error) => void }[] = []
+    let cancels = 0
     const db = fakeDb({
-      execute: () => {
-        calls++
-        return new Promise<QueryResult>((r) => {
-          resolve = r
-        })
+      execute: () => new Promise<QueryResult>((resolve, reject) => pending.push({ resolve, reject })),
+      cancel: () => {
+        cancels++
+        pending[0]?.reject(new Error("canceling statement due to user request"))
       },
     })
     const app = await boot(100, 30, db)
@@ -2039,16 +2158,34 @@ describe("tabs", () => {
     mockInput.pressKey("t", { ctrl: true })
     await mockInput.typeText("SELECT 2")
     mockInput.pressEnter({ ctrl: true })
-    await flush()
-    expect(calls).toBe(1)
-    expect(frameText()).toContain("another query is still running")
+    await waitFor(() => pending.length === 2)
+    expect(cancels).toBe(1)
 
-    resolve({ kind: "command", commandTag: "SELECT", rowCount: 7, elapsedMs: 1 })
-    await waitFor(() => app.tabs.all[0]!.results.root.visible === false)
-    expect(frameText()).not.toContain("SELECT 7")
-    mockInput.pressKey("1", { meta: true })
+    pending[1]!.resolve({ kind: "command", commandTag: "SELECT", rowCount: 7, elapsedMs: 1 })
     await flush()
     expect(frameText()).toContain("SELECT 7")
+    mockInput.pressKey("1", { meta: true })
+    await flush()
+    expect(frameText()).toContain("query cancelled")
+    expect(app.tabs.all.length).toBe(2)
+  })
+
+  test("quitting during a running query does not touch the destroyed UI", async () => {
+    let reject: (err: Error) => void = () => {}
+    let cancels = 0
+    const db = fakeDb({
+      execute: () => new Promise<QueryResult>((_, r) => (reject = r)),
+      disconnect: async () => reject(new Error("connection ended")),
+      cancel: () => cancels++,
+    })
+    const app = await boot(100, 30, db)
+    app.editor.setQuery("SELECT pg_sleep(10)")
+    const run = app.executeQuery()
+    await setup!.flush()
+
+    app.quit()
+    await run
+    expect(cancels).toBe(1)
   })
 
   test("tabs persist per connection across restarts", async () => {

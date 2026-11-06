@@ -18,7 +18,7 @@ export class CompletionPopup {
   readonly root: BoxRenderable
   private readonly renderer: CliRenderer
   private readonly list: TextRenderable
-  private readonly selectedBg = RGBA.fromHex(theme.selectBg)
+  private readonly selectedFg = RGBA.fromHex(theme.popupSelectFg)
   private completion: Completion | null = null
   private selected = 0
   private scroll = 0
@@ -120,7 +120,7 @@ export class CompletionPopup {
         fg(theme.dim)(KIND_TAG[item.kind].padEnd(3)),
       ]
       chunks.push(
-        ...(this.scroll + offset === this.selected ? row.map((c) => ({ ...c, bg: this.selectedBg })) : row),
+        ...(this.scroll + offset === this.selected ? row.map((c) => ({ ...c, fg: this.selectedFg })) : row),
       )
     }
     this.list.content = new StyledText(chunks)

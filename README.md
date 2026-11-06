@@ -4,12 +4,14 @@ A minimalist TUI PostgreSQL client. Black background, white text, color reserved
 
 ## Features
 
-- **Schema browser** — expandable schemas → tables/views → columns tree with data types and `PK` / `FK` / `NN` markers
-- **SQL editor** — line numbers, keyword/string/number/comment highlighting, auto-growing height, undo/redo; `CTRL-Enter` runs the statement under the cursor (highlighted in the gutter)
-- **Results grid** — bordered table with sticky header, pagination, row selection, copy-row-as-JSON, and click-to-sort headers
+- **Schema browser** — expandable schemas → tables/views, each with collapsible **columns** (data types and `PK` / `FK` / `NN` markers), **indexes**, **constraints**, and **triggers** groups; rows too long for the sidebar end in `…`
+- **SQL editor** — line numbers, keyword/string/number/comment highlighting, auto-growing height, undo/redo; `CTRL-Enter` runs the statement under the cursor (highlighted in the gutter), `CTRL-X` runs `EXPLAIN` on it
+- **Autocomplete** — table, column, and keyword suggestions while typing; `CTRL-Space` opens them on demand. Columns of tables referenced in the statement are loaded on demand, and aliases resolve
+- **Running queries** — the results footer shows a live timer; starting a new query cancels the running one
+- **Results grid** — bordered table with sticky header, pagination, row selection, mouse-wheel scrolling, copy-row-as-JSON, and click-to-sort headers. `EXPLAIN` output is shown as plain, untruncated text
 - **Tabs** — each tab has its own SQL and results; tabs are saved per connection and restored on reconnect
 - **Query history & favorites** — per-connection, searchable pickers (`CTRL-R` / `CTRL-F`)
-- **Saved connections** — `CTRL-O` lists saved connections; masked password input; passwords are saved to the config file
+- **Saved connections** — `CTRL-O` lists saved connections with optional names and notes; masked password input; passwords are saved to the config file, or kept in 1Password via an `op://` reference; SSL is used when the server supports it
 - **In-app keybind help** — `CTRL-H`
 
 ## Requirements
@@ -41,12 +43,24 @@ Settings live at `~/.config/pg-explorer/config` (TOML), kept owner-only (`0600`)
 
 ```toml
 [[connections]]
+name = "Local"
 host = "localhost"
 port = 5432
 user = "postgres"
 database = "mydb"
 password = "secret"
+notes = "scratch database"
+
+[[connections]]
+name = "Prod read replica"
+host = "replica.example.com"
+port = 5432
+user = "readonly"
+database = "app"
+passwordRef = "op://Engineering/prod-replica/password"
 ```
+
+`name` and `notes` are optional and searchable in the connections picker. Entering a password that starts with `op://` stores it as `passwordRef`; the secret is read with the [1Password CLI](https://developer.1password.com/docs/cli/) (`op read`) on each connect and never written to the config file.
 
 Query history, favorites, and open tabs are stored per connection in `~/.config/pg-explorer/history.json` (last 500, deduplicated), `favorites.json`, and `tabs.json`.
 
@@ -72,7 +86,10 @@ Also available anytime inside the app with `CTRL-H`.
 
 | Keys | Action |
 | ---- | ------ |
-| `ctrl+enter` | Run the statement under the cursor |
+| `ctrl+enter` | Run the statement under the cursor (cancels a running query) |
+| `ctrl+x` | `EXPLAIN` the statement under the cursor |
+| `ctrl+space` | Autocomplete |
+| `tab / enter` | Accept suggestion |
 | `ctrl+z` / `ctrl+shift+z` | Undo / redo |
 | `ctrl+s` | Save as favorite |
 
@@ -111,6 +128,7 @@ Also available anytime inside the app with `CTRL-H`.
 | ---- | ------ |
 | `up / down` | Move row selection |
 | `left / right` | Scroll sideways |
+| mouse wheel | Scroll rows (selection stays put) |
 | `home / end` | First / last row |
 | `pageup / pagedown` | Previous / next page |
 | `n / p` | Next / previous page |
